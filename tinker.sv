@@ -202,6 +202,7 @@ endmodule
 //=====================================================================
 module alu(
     input  [4:0]  opcode,
+    input  [63:0] rdVal,
     input  [63:0] rsVal,
     input  [63:0] rtVal,
     input  [11:0] L,
@@ -226,7 +227,7 @@ module alu(
             5'b00111: aluResult = rsVal << L;    // shftli
             5'b10001: aluResult = rsVal;         // mov rd, rs
             5'b10010: begin                      // mov rd, L
-                aluResult = 64'b0;
+                aluResult = rdVal;
                 aluResult[11:0] = L;
             end
         endcase
@@ -339,6 +340,7 @@ module tinker_core (
     wire [63:0] alu_result;
     alu alu_inst (
         .opcode(opcode),
+        .rdVal(rdVal),
         .rsVal(rsVal),
         .rtVal(rtVal),
         .L(L),
