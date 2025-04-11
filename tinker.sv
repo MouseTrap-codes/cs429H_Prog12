@@ -318,7 +318,7 @@ endmodule
 
 
 //=====================================================================
-// CORRECTED TINKER CORE (MULTICYCLE)
+// CORRECTED TINKER CORE (MULTICYCLE, 5-STATE FSM with immediate halt)
 //=====================================================================
 module tinker_core(
     input  clk,
@@ -326,45 +326,50 @@ module tinker_core(
     output logic hlt
 );
 
+    // FSM state encoding (5 states for a normal instruction):
+    // FETCH, DECODE, EXECUTE, MEMORY, WRITEBACK.
+    // When a halt instruction is encountered (opcode==5'h0F),
+    // we do not advance past WRITEBACK and assert hlt.
     typedef enum logic [2:0] {
         FETCH     = 3'd0,
         DECODE    = 3'd1,
         EXECUTE   = 3'd2,
         MEMORY    = 3'd3,
-        WRITEBACK = 3'd4,
-        WAIT      = 3'd5,
-        HALT      = 3'd6
+        WRITEBACK = 3'd4
     } state_t;
 
     state_t current_state, next_state;
     reg [31:0] PC;
     reg [31:0] IR;  // Instruction Register
 
-    // Pipeline registers for write-back
+    // Pipeline registers for write-back signals.
     reg [63:0] exec_result_reg;
     reg [4:0]  dest_reg;
     reg        do_write;
 
-    // FSM next-state logic
+    // Extract the opcode from IR for checking halt.
+    wire [4:0] IR_opcode;
+    assign IR_opcode = IR[31:27];
+
+    // Next-state logic.
     always @(*) begin
-        if (current_state == HALT)
-            next_state = HALT;
-        else if (current_state == WAIT)
-            next_state = HALT;
-        else begin
-            case (current_state)
-                FETCH:     next_state = DECODE;
-                DECODE:    next_state = EXECUTE;
-                EXECUTE:   next_state = MEMORY;
-                MEMORY:    next_state = WRITEBACK;
-                WRITEBACK: next_state = WAIT;
-                default:   next_state = FETCH;
-            endcase
-        end
+        case (current_state)
+            FETCH:     next_state = DECODE;
+            DECODE:    next_state = EXECUTE;
+            EXECUTE:   next_state = MEMORY;
+            MEMORY:    next_state = WRITEBACK;
+            WRITEBACK: begin
+                if (IR_opcode == 5'h0F) // halt instruction: remain in WRITEBACK.
+                    next_state = WRITEBACK;
+                else
+                    next_state = FETCH;
+            end
+            default: next_state = FETCH;
+        endcase
     end
 
     //--------------------------------------------------------------------
-    // Memory Interface
+    // Memory Interface (same as before)
     //--------------------------------------------------------------------
     wire [31:0] fetch_instruction;
     wire [63:0] data_load;
@@ -386,7 +391,7 @@ module tinker_core(
     );
 
     //--------------------------------------------------------------------
-    // Fetch Stage
+    // Fetch stage
     //--------------------------------------------------------------------
     wire [31:0] instruction;
     fetch fetch_inst (
@@ -395,7 +400,7 @@ module tinker_core(
         .instruction(instruction)
     );
 
-    // Latch the fetched instruction into IR in the DECODE stage.
+    // Latch the fetched instruction into IR during DECODE.
     always @(posedge clk or posedge reset) begin
         if (reset)
             IR <= 32'b0;
@@ -406,6 +411,7 @@ module tinker_core(
     //--------------------------------------------------------------------
     // Register File
     //--------------------------------------------------------------------
+    // These modules remain unchanged.
     wire [4:0]  rf_addrA, rf_addrB;
     wire [63:0] opA, opB;
     wire [63:0] dummy_rdOut;
@@ -423,7 +429,7 @@ module tinker_core(
     );
 
     //--------------------------------------------------------------------
-    // Control Unit (now uses IR instead of the live fetch output)
+    // Control Unit (now using IR as the stable instruction)
     //--------------------------------------------------------------------
     wire [63:0] ctrl_exec_result;
     wire        ctrl_write_en;
@@ -440,7 +446,7 @@ module tinker_core(
         .current_state(current_state),
         .clk(clk),
         .reset(reset),
-        .instruction(IR),  // Use IR
+        .instruction(IR),  // Use IR (latched in DECODE)
         .PC(PC),
         .opA(opA),
         .opB(opB),
@@ -457,15 +463,15 @@ module tinker_core(
         .data_load_addr(ctrl_data_load_addr)
     );
 
-    assign rf_addrA           = ctrl_rf_addrA;
-    assign rf_addrB           = ctrl_rf_addrB;
-    assign mem_we             = ctrl_mem_we;
-    assign mem_store_addr     = ctrl_mem_addr;
-    assign mem_store_data     = ctrl_mem_write_data;
-    assign mem_data_load_addr = ctrl_data_load_addr;
+    assign rf_addrA             = ctrl_rf_addrA;
+    assign rf_addrB             = ctrl_rf_addrB;
+    assign mem_we               = ctrl_mem_we;
+    assign mem_store_addr       = ctrl_mem_addr;
+    assign mem_store_data       = ctrl_mem_write_data;
+    assign mem_data_load_addr   = ctrl_data_load_addr;
 
     //--------------------------------------------------------------------
-    // FSM State and PC Update (including write-back handling)
+    // FSM State and PC update, including pipeline updates
     //--------------------------------------------------------------------
     always @(posedge clk or posedge reset) begin
         if (reset) begin
@@ -477,38 +483,43 @@ module tinker_core(
         end else begin
             current_state <= next_state;
 
-            // In EXECUTE and MEMORY stages, latch the computed exec_result and destination register.
+            // Latch the execution result and destination register in EXECUTE and MEMORY stages.
             case (current_state)
                 EXECUTE: begin
                     exec_result_reg <= ctrl_exec_result;
-                    dest_reg        <= ctrl_write_reg;
-                    do_write        <= 1'b0;
+                    dest_reg <= ctrl_write_reg;
+                    do_write <= 1'b0;
                 end
 
                 MEMORY: begin
-                    exec_result_reg <= ctrl_exec_result;  // For loads, this is the loaded data.
-                    dest_reg        <= ctrl_write_reg;
-                    do_write        <= 1'b0;
+                    // For load instructions (opcode 5'h10), ctrl_exec_result should be the loaded data.
+                    exec_result_reg <= ctrl_exec_result;
+                    dest_reg <= ctrl_write_reg;
+                    do_write <= 1'b0;
                 end
 
                 WRITEBACK: begin
-                    do_write <= ctrl_write_en;
+                    do_write <= ctrl_write_en;  // assert write enable during writeback
                 end
 
                 default: do_write <= 1'b0;
             endcase
 
-            if (current_state != HALT)
+            // Update PC only if we are not finishing a halt instruction.
+            // When a halt is encountered (IR_opcode==5'h0F) and we are in WRITEBACK,
+            // we stop updating PC.
+            if (!(current_state == WRITEBACK && IR_opcode == 5'h0F))
                 PC <= ctrl_next_PC;
         end
     end
 
     //--------------------------------------------------------------------
-    // Halt Signal
+    // Halt Signal: Assert when we are in WRITEBACK and the latched instruction is halt.
     //--------------------------------------------------------------------
-    assign hlt = (current_state == HALT);
+    assign hlt = (current_state == WRITEBACK && IR_opcode == 5'h0F);
 
 endmodule
+
 
 
 
