@@ -136,7 +136,7 @@ module memory(
    input  [63:0] store_data
 );
     parameter MEM_SIZE = 512*1024;  // 512 KB
-    reg [7:0] bytes [0:MEM_SIZE-1];
+    (* keep *) reg [7:0] bytes [0:MEM_SIZE-1];
     integer i;
     
     always @(posedge clk) begin
