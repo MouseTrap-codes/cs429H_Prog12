@@ -96,11 +96,11 @@ module regFile (
     // Use an initial block to provide default values.
     // This ensures that registers have a defined value at startup
     // without using an active reset branch that would overwrite externally loaded state.
-    initial begin
-        for (i = 0; i < 31; i = i + 1)
-            registers[i] = 64'b0;
-        registers[31] = 64'h80000;
-    end
+    // initial begin
+    //     for (i = 0; i < 31; i = i + 1)
+    //         registers[i] = 64'b0;
+    //     registers[31] = 64'h80000;
+    // end
     
     // Synchronous write: when 'we' is asserted, update the register.
     // On reset, we do nothing here so as not to override externally loaded values.
