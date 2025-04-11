@@ -314,12 +314,16 @@ module control(
     end
 endmodule
 
+//=====================================================================
+// CORRECTED TINKER CORE (MULTICYCLE)
+//=====================================================================
 module tinker_core(
     input  clk,
     input  reset,
     output logic hlt
 );
 
+    // FSM state encoding
     typedef enum logic [2:0] {
         FETCH     = 3'd0,
         DECODE    = 3'd1,
@@ -333,12 +337,12 @@ module tinker_core(
     state_t current_state, next_state;
     reg [31:0] PC;
 
-    // Write-back latches
+    // Pipeline registers for write-back
     reg [63:0] exec_result_reg;
     reg [4:0]  dest_reg;
     reg        do_write;
 
-    // FSM: state transition
+    // FSM next-state logic
     always @(*) begin
         if (current_state == HALT)
             next_state = HALT;
@@ -356,7 +360,9 @@ module tinker_core(
         end
     end
 
-    // Memory interface
+    //--------------------------------------------------------------------
+    // Memory Interface
+    //--------------------------------------------------------------------
     wire [31:0] fetch_instruction;
     wire [63:0] data_load;
     wire [31:0] mem_data_load_addr;
@@ -364,7 +370,7 @@ module tinker_core(
     wire [31:0] mem_store_addr;
     wire [63:0] mem_store_data;
 
-    memory memory (
+    memory memory_inst (
         .clk(clk),
         .reset(reset),
         .fetch_addr(PC),
@@ -376,7 +382,9 @@ module tinker_core(
         .store_data(mem_store_data)
     );
 
-    // Fetch
+    //--------------------------------------------------------------------
+    // Fetch Stage
+    //--------------------------------------------------------------------
     wire [31:0] instruction;
     fetch fetch_inst (
         .PC(PC),
@@ -384,17 +392,19 @@ module tinker_core(
         .instruction(instruction)
     );
 
-    // Register file
+    //--------------------------------------------------------------------
+    // Register File
+    //--------------------------------------------------------------------
     wire [4:0]  rf_addrA, rf_addrB;
     wire [63:0] opA, opB;
-    reg [63:0] registers [0:31];
+    // Note: The regFile module contains its own register array and writes
+    // synchronously inside itself.
     wire [63:0] dummy_rdOut;
-
     regFile reg_file (
         .clk(clk),
         .reset(reset),
         .data_in(exec_result_reg),
-        .we(do_write && dest_reg != 5'd0),
+        .we(do_write && (dest_reg != 5'd0)),
         .rd(dest_reg),
         .rs(rf_addrA),
         .rt(rf_addrB),
@@ -403,7 +413,9 @@ module tinker_core(
         .rdOut(dummy_rdOut)
     );
 
-    // Control unit
+    //--------------------------------------------------------------------
+    // Control Unit
+    //--------------------------------------------------------------------
     wire [63:0] ctrl_exec_result;
     wire        ctrl_write_en;
     wire [4:0]  ctrl_write_reg;
@@ -443,22 +455,20 @@ module tinker_core(
     assign mem_store_data       = ctrl_mem_write_data;
     assign mem_data_load_addr   = ctrl_data_load_addr;
 
-    // FSM state + PC logic
+    //--------------------------------------------------------------------
+    // FSM state and PC update logic (including write-back handling)
+    //--------------------------------------------------------------------
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            current_state <= FETCH;
-            PC            <= 32'h2000;
+            current_state   <= FETCH;
+            PC              <= 32'h2000;
             exec_result_reg <= 0;
             dest_reg        <= 0;
             do_write        <= 0;
-
-            registers[31]   <= 64'h80000;
-            for (int i = 0; i < 31; i = i + 1)
-                registers[i] <= 0;
-
         end else begin
             current_state <= next_state;
 
+            // Pipeline the execution result and destination register in EXECUTE and MEMORY stages.
             case (current_state)
                 EXECUTE: begin
                     exec_result_reg <= ctrl_exec_result;
@@ -467,12 +477,13 @@ module tinker_core(
                 end
 
                 MEMORY: begin
-                    exec_result_reg <= ctrl_exec_result;
+                    exec_result_reg <= ctrl_exec_result; // For loads, control should supply the loaded value.
                     dest_reg        <= ctrl_write_reg;
                     do_write        <= 0;
                 end
 
                 WRITEBACK: begin
+                    // In WRITEBACK, the control unit asserts write_en.
                     do_write <= ctrl_write_en;
                 end
 
@@ -481,19 +492,19 @@ module tinker_core(
                 end
             endcase
 
-            if (do_write && dest_reg != 5'd0) begin
-                reg_file.registers[dest_reg] <= exec_result_reg;
-            end
-
+            // Update the program counter (PC) if not halted.
             if (current_state != HALT)
                 PC <= ctrl_next_PC;
         end
     end
 
-    // Halt signal
+    //--------------------------------------------------------------------
+    // Halt Signal: Assert when FSM is in HALT state
+    //--------------------------------------------------------------------
     assign hlt = (current_state == HALT);
 
 endmodule
+
 
 
 
