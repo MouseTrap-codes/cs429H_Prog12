@@ -189,16 +189,16 @@ endmodule
 
 // control.sv
 module control(
-    input      [2:0] current_state,  // Global FSM state
+    input      [2:0] current_state,  // Global FSM state (used only for branch/memory signals)
     input            clk,
     input            reset,
-    input  [31:0]    instruction,
+    input  [31:0]    instruction,    // Now this is the latched IR value!
     input  [31:0]    PC,
-    input  [63:0]    opA,         // Data from register file (rs)
-    input  [63:0]    opB,         // Data from register file (rt)
-    input  [63:0]    data_load,   // Data loaded from memory 
+    input  [63:0]    opA,            // Data from regFile (rs)
+    input  [63:0]    opB,            // Data from regFile (rt)
+    input  [63:0]    data_load,      // Data loaded from memory
     output reg [31:0] next_PC,
-    output reg [63:0] exec_result,
+    output reg [63:0] exec_result,   // Always computed as a function of the instruction!
     output reg        write_en,
     output reg [4:0]  write_reg,
     output reg [4:0]  rf_addrA,
@@ -209,7 +209,7 @@ module control(
     output reg [31:0] data_load_addr
 );
 
-    // Decode the instruction fields.
+    // Decode instruction fields.
     wire [4:0] opcode, rd, rs, rt;
     wire [11:0] L;
     instruction_decoder dec (
@@ -226,7 +226,7 @@ module control(
     alu  alu_inst (.opcode(opcode), .op1(opA), .op2(opB), .L(L), .result(alu_out));
     fpu  fpu_inst (.opcode(opcode), .rs(opA), .rt(opB), .L(L), .result(fpu_out));
 
-    // Default register-file read addresses.
+    // Register‑file read address determination.
     always @(*) begin
         rf_addrA = rs;
         rf_addrB = rt;
@@ -242,63 +242,64 @@ module control(
         endcase
     end
 
-    // Next PC generation (branches, jumps, etc.):
+    // Next PC logic is computed (this part may depend on current_state).
     always @(*) begin
-        // Default: sequential execution.
-        next_PC = PC + 4;
+        next_PC = PC + 4;  // default
         case (opcode)
             5'h8:  next_PC = opA;
             5'h9:  next_PC = PC + opA[31:0];
             5'hA:  next_PC = PC + {{20{L[11]}}, L};
             5'hB:  next_PC = (opA != 0) ? opB : PC + 4;
-            5'hC:  next_PC = opA; // example for branch type—adjust per your ISA.
-            5'hD:  next_PC = data_load[31:0]; // for load jump, for instance.
+            5'hC:  next_PC = opA; // example branch behavior
+            5'hD:  next_PC = data_load[31:0]; // example: jump via loaded data
             5'hE:  next_PC = ($signed(opA) > $signed(opB)) ? rd : PC + 4;
             default: next_PC = PC + 4;
         endcase
     end
 
-    // Execution result: compute based solely on opcode (ignoring current_state).
-    // The top-level pipeline will latch this value during EXECUTE.
+    // *** Compute exec_result solely based on opcode and operands ***
     always @(*) begin
         case (opcode)
-            // ALU operations:
+            // For ALU ops use the ALU output.
             5'h18, 5'h1a, 5'h1c, 5'h1d,
             5'h0,  5'h1,  5'h2, 5'h3, 5'h4, 5'h6,
             5'h19, 5'h1b, 5'h5, 5'h7, 5'h12:
                 exec_result = alu_out;
-            // FPU operations:
+            // For FPU ops.
             5'h14, 5'h15, 5'h16, 5'h17:
                 exec_result = fpu_out;
-            // Load: use data loaded from memory.
+            // For loads: use data loaded from memory.
             5'h10: begin
                 data_load_addr = opA + {{52{L[11]}}, L};
                 exec_result = data_load;
             end
-            // A move (immediate) instruction:
+            // For a move instruction.
             5'h11: exec_result = opA;
             default: exec_result = 64'b0;
         endcase
     end
 
-    // Write-back control:
+    // Write-back control: assert write_en for ALU/FPU/load instructions.
     always @(*) begin
         case (opcode)
-            5'h18, 5'h19, 5'h1a, 5'h1b, 5'h1c, 5'h1d,
+            5'h18, 5'h19, 5'h1a, 5'h1b,
+            5'h1c, 5'h1d,
             5'h0, 5'h1, 5'h2, 5'h3, 5'h4, 5'h5, 5'h6, 5'h7, 5'h12,
             5'h14, 5'h15, 5'h16, 5'h17,
-            5'h10: begin
-                write_en = 1'b1;
-                write_reg = rd;
-            end
-            default: begin
-                write_en = 1'b0;
-                write_reg = rd;
-            end
+            5'h10:
+                begin
+                    write_en = 1'b1;
+                    write_reg = rd;
+                end
+            default:
+                begin
+                    write_en = 1'b0;
+                    write_reg = rd;
+                end
         endcase
     end
 
-    // Memory store operation: for example, opcode 5'h13 might be a store.
+    // Memory store operations (for example, opcode 5'h13 might be a store).
     always @(*) begin
         if (opcode == 5'h13) begin
             mem_we         = 1'b1;
@@ -315,6 +316,7 @@ endmodule
 
 
 
+
 //=====================================================================
 // CORRECTED TINKER CORE (MULTICYCLE)
 //=====================================================================
@@ -324,7 +326,6 @@ module tinker_core(
     output logic hlt
 );
 
-    // FSM state encoding
     typedef enum logic [2:0] {
         FETCH     = 3'd0,
         DECODE    = 3'd1,
@@ -337,6 +338,7 @@ module tinker_core(
 
     state_t current_state, next_state;
     reg [31:0] PC;
+    reg [31:0] IR;  // Instruction Register
 
     // Pipeline registers for write-back
     reg [63:0] exec_result_reg;
@@ -371,7 +373,7 @@ module tinker_core(
     wire [31:0] mem_store_addr;
     wire [63:0] mem_store_data;
 
-    memory memory (
+    memory memory_inst (
         .clk(clk),
         .reset(reset),
         .fetch_addr(PC),
@@ -393,13 +395,19 @@ module tinker_core(
         .instruction(instruction)
     );
 
+    // Latch the fetched instruction into IR in the DECODE stage.
+    always @(posedge clk or posedge reset) begin
+        if (reset)
+            IR <= 32'b0;
+        else if (current_state == DECODE)
+            IR <= instruction;
+    end
+
     //--------------------------------------------------------------------
     // Register File
     //--------------------------------------------------------------------
     wire [4:0]  rf_addrA, rf_addrB;
     wire [63:0] opA, opB;
-    // Note: The regFile module contains its own register array and writes
-    // synchronously inside itself.
     wire [63:0] dummy_rdOut;
     regFile reg_file (
         .clk(clk),
@@ -415,7 +423,7 @@ module tinker_core(
     );
 
     //--------------------------------------------------------------------
-    // Control Unit
+    // Control Unit (now uses IR instead of the live fetch output)
     //--------------------------------------------------------------------
     wire [63:0] ctrl_exec_result;
     wire        ctrl_write_en;
@@ -432,7 +440,7 @@ module tinker_core(
         .current_state(current_state),
         .clk(clk),
         .reset(reset),
-        .instruction(instruction),
+        .instruction(IR),  // Use IR
         .PC(PC),
         .opA(opA),
         .opB(opB),
@@ -449,63 +457,58 @@ module tinker_core(
         .data_load_addr(ctrl_data_load_addr)
     );
 
-    assign rf_addrA             = ctrl_rf_addrA;
-    assign rf_addrB             = ctrl_rf_addrB;
-    assign mem_we               = ctrl_mem_we;
-    assign mem_store_addr       = ctrl_mem_addr;
-    assign mem_store_data       = ctrl_mem_write_data;
-    assign mem_data_load_addr   = ctrl_data_load_addr;
+    assign rf_addrA           = ctrl_rf_addrA;
+    assign rf_addrB           = ctrl_rf_addrB;
+    assign mem_we             = ctrl_mem_we;
+    assign mem_store_addr     = ctrl_mem_addr;
+    assign mem_store_data     = ctrl_mem_write_data;
+    assign mem_data_load_addr = ctrl_data_load_addr;
 
     //--------------------------------------------------------------------
-    // FSM state and PC update logic (including write-back handling)
+    // FSM State and PC Update (including write-back handling)
     //--------------------------------------------------------------------
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             current_state   <= FETCH;
             PC              <= 32'h2000;
-            exec_result_reg <= 0;
-            dest_reg        <= 0;
-            do_write        <= 0;
+            exec_result_reg <= 64'b0;
+            dest_reg        <= 5'd0;
+            do_write        <= 1'b0;
         end else begin
             current_state <= next_state;
 
-            // Pipeline the execution result and destination register in EXECUTE and MEMORY stages.
+            // In EXECUTE and MEMORY stages, latch the computed exec_result and destination register.
             case (current_state)
                 EXECUTE: begin
                     exec_result_reg <= ctrl_exec_result;
                     dest_reg        <= ctrl_write_reg;
-                    do_write        <= 0;
+                    do_write        <= 1'b0;
                 end
 
                 MEMORY: begin
-                    exec_result_reg <= ctrl_exec_result; // For loads, control should supply the loaded value.
+                    exec_result_reg <= ctrl_exec_result;  // For loads, this is the loaded data.
                     dest_reg        <= ctrl_write_reg;
-                    do_write        <= 0;
+                    do_write        <= 1'b0;
                 end
 
                 WRITEBACK: begin
-                    // In WRITEBACK, the control unit asserts write_en.
                     do_write <= ctrl_write_en;
                 end
 
-                default: begin
-                    do_write <= 0;
-                end
+                default: do_write <= 1'b0;
             endcase
 
-            // Update the program counter (PC) if not halted.
             if (current_state != HALT)
                 PC <= ctrl_next_PC;
         end
     end
 
     //--------------------------------------------------------------------
-    // Halt Signal: Assert when FSM is in HALT state
+    // Halt Signal
     //--------------------------------------------------------------------
     assign hlt = (current_state == HALT);
 
 endmodule
-
 
 
 
