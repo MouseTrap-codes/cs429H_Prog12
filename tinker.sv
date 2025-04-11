@@ -296,13 +296,13 @@ module fpu(
 endmodule
 
 
-//=====================================================================
-// TOP-LEVEL MODULE (NAMED "tinker_core")
+///=====================================================================
+// TOP-LEVEL MODULE (tinker_core)
 //=====================================================================
 module tinker_core (
     input         clk,
     input         reset,
-    output        hlt       // cycle-complete flag
+    output        hlt
 );
     // FETCH
     wire [63:0] pc;
@@ -318,18 +318,18 @@ module tinker_core (
     wire [31:0] instr_out;
     wire [63:0] mem_data_out;
     reg  [63:0] mem_addr;
-    wire        mem_read_instr = 1'b1;  // always fetch
+    wire        mem_read_instr = 1'b1;
     wire        mem_read_data;
     wire        mem_write_en;
     reg  [63:0] mem_write_data;
     memory memory (
-        .addr        (mem_addr),
-        .mem_read_instr(mem_read_instr),
-        .mem_read_data(mem_read_data),
-        .mem_write   (mem_write_en),
-        .write_data  (mem_write_data),
-        .instr_out   (instr_out),
-        .data_out    (mem_data_out)
+        .addr           (mem_addr),
+        .mem_read_instr (mem_read_instr),
+        .mem_read_data  (mem_read_data),
+        .mem_write      (mem_write_en),
+        .write_data     (mem_write_data),
+        .instr_out      (instr_out),
+        .data_out       (mem_data_out)
     );
 
     // DECODER
@@ -348,22 +348,30 @@ module tinker_core (
     reg  [4:0]  write_reg;
     reg         write_enable;
     reg_file reg_file (
-        .clk(clk), .reset(reset),
-        .data_in(write_data),
-        .write_reg(write_reg),
-        .we(write_enable),
-        .rd(rd), .rs(rs), .rt(rt),
-        .rdOut(rdVal), .rsOut(rsVal), .rtOut(rtVal)
+        .clk       (clk),
+        .reset     (reset),
+        .data_in   (write_data),
+        .write_reg (write_reg),
+        .we        (write_enable),
+        .rd        (rd),
+        .rs        (rs),
+        .rt        (rt),
+        .rdOut     (rdVal),
+        .rsOut     (rsVal),
+        .rtOut     (rtVal)
     );
 
     // ALU / FPU
     wire [63:0] alu_result, fpu_result;
     alu alu_inst (
-        .opcode(opcode), .rsVal(rsVal), .rtVal(rtVal),
-        .L(L), .aluResult(alu_result)
+        .opcode(opcode),
+        .rsVal(rsVal), .rtVal(rtVal),
+        .L(L),
+        .aluResult(alu_result)
     );
     fpu fpu_inst (
-        .opcode(opcode), .rsVal(rsVal), .rtVal(rtVal),
+        .opcode(opcode),
+        .rsVal(rsVal), .rtVal(rtVal),
         .fpuResult(fpu_result)
     );
 
@@ -373,18 +381,20 @@ module tinker_core (
     wire [63:0] branch_pc_ctrl;
     wire        hlt_ctrl;
     control control_inst (
-        .opcode(opcode),
-        .rs_val(rsVal), .rt_val(rtVal), .rd_val(rdVal),
-        .pc(pc),
-        .branch(branch_ctrl),
+        .opcode   (opcode),
+        .rs_val   (rsVal),
+        .rt_val   (rtVal),
+        .rd_val   (rdVal),
+        .pc       (pc),
+        .branch   (branch_ctrl),
         .branch_pc(branch_pc_ctrl),
-        .mem_read(mem_read),
+        .mem_read (mem_read),
         .mem_write(mem_write),
         .reg_write(reg_write),
-        .hlt(hlt_ctrl)
+        .hlt      (hlt_ctrl)
     );
 
-    // Latch the hlt output
+    // STICKY HALT
     reg hlt_r;
     always @(posedge clk or posedge reset) begin
         if (reset)       hlt_r <= 1'b0;
@@ -392,15 +402,15 @@ module tinker_core (
     end
     assign hlt = hlt_r;
 
-    // MUX for write‑back
+    // WRITE-BACK MUX
     reg [63:0] mux_result;
     always @(*) begin
-        if (opcode[4:2] == 3'b101)       mux_result = fpu_result;
-        else if (mem_read)               mux_result = mem_data_out;
-        else                             mux_result = alu_result;
+        if (opcode[4:2] == 3'b101)      mux_result = fpu_result;
+        else if (mem_read)              mux_result = mem_data_out;
+        else                            mux_result = alu_result;
     end
 
-    // Synchronous updates: mem_addr, writeback, etc.
+    // SYNC WRITE-BACK & MEM ADDR
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             mem_addr       <= 64'b0;
@@ -409,18 +419,24 @@ module tinker_core (
             write_reg      <= 5'b0;
             write_enable   <= 1'b0;
         end else begin
-            // address: instruction fetch or data access
-            mem_addr       <= (mem_read || mem_write) ? alu_result : pc;
+            // Memory address
+            if (mem_read || mem_write)
+                mem_addr <= alu_result;
+            else
+                mem_addr <= pc;
+
+            // Register write-back
+            write_data   <= mux_result;
+            write_reg    <= rd;
+            write_enable <= reg_write && (rd != 5'd0);
+
+            // Store data
             mem_write_data <= rsVal;
-            write_data     <= mux_result;
-            write_reg      <= rd;
-            write_enable   <= reg_write && (rd != 5'd0);
         end
     end
 
-    // Branch override
-    assign branch    = branch_ctrl;
-    assign branch_pc = branch_pc_ctrl;
+    // BRANCH & MEM_WRITE EN
+    assign branch       = branch_ctrl;
+    assign branch_pc    = branch_pc_ctrl;
     assign mem_write_en = mem_write;
-
 endmodule
