@@ -21,7 +21,7 @@ module alu (
     input  [63:0] op2,       // Second operand
     input  [11:0] L,         // 12-bit literal/immediate
     output reg [63:0] result // Result
-);a
+);
     always @(*) begin
         case (opcode)
             // Integer arithmetic
