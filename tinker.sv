@@ -308,63 +308,33 @@ module control(
 
 endmodule
 
-// tinker_core.v
-// CORRECTED TINKER CORE (MULTICYCLE, NO DEDICATED HALT STATE)
-// Halt is detected during WRITEBACK: if the latched instruction (IR)
-// is either 32'b0 or has halt opcode 5'h0F, then on posedge clk the
-// halt flag is set and PC/FSM updates are frozen.
-module tinker_core(
-    input  clk,
-    input  reset,
+module tinker_core (
+    input  logic clk,
+    input  logic reset,
     output logic hlt
 );
 
-    // FSM state encoding: five states for normal instruction execution.
-    typedef enum logic [2:0] {
-        FETCH     = 3'd0,
-        DECODE    = 3'd1,
-        EXECUTE   = 3'd2,
-        MEMORY    = 3'd3,
-        WRITEBACK = 3'd4
-    } state_t;
+    // Program counter
+    logic [31:0] PC;
+    logic [31:0] instruction;
 
-    state_t current_state, next_state;
-    reg [31:0] PC;
-    reg [31:0] IR;  // Instruction Register (latched in DECODE)
-
-    // Pipeline registers for write-back signals.
-    reg [63:0] exec_result_reg;
-    reg [4:0]  dest_reg;
-    reg        do_write;
-    reg        halt_reg;  // internal halt flag
-
-    // Next-state logic: simple 5‑state FSM
-    always @(*) begin
-        case (current_state)
-            FETCH:     next_state = DECODE;
-            DECODE:    next_state = EXECUTE;
-            EXECUTE:   next_state = MEMORY;
-            MEMORY:    next_state = WRITEBACK;
-            WRITEBACK: next_state = FETCH;  // normally, after writeback, return to FETCH
-            default:   next_state = FETCH;
-        endcase
-    end
+    // Halt signal internal
+    logic halt_flag;
 
     //--------------------------------------------------------------------
-    // Memory Interface
+    // Memory
     //--------------------------------------------------------------------
-    wire [31:0] fetch_instruction;
     wire [63:0] data_load;
     wire [31:0] mem_data_load_addr;
     wire        mem_we;
     wire [31:0] mem_store_addr;
     wire [63:0] mem_store_data;
 
-    memory memory (
+    memory mem_inst (
         .clk(clk),
         .reset(reset),
         .fetch_addr(PC),
-        .fetch_instruction(fetch_instruction),
+        .fetch_instruction(instruction),
         .data_load_addr(mem_data_load_addr),
         .data_load(data_load),
         .store_we(mem_we),
@@ -373,134 +343,108 @@ module tinker_core(
     );
 
     //--------------------------------------------------------------------
-    // Fetch Stage
+    // Decode instruction and register file setup
     //--------------------------------------------------------------------
-    wire [31:0] instruction;
-    fetch fetch_inst (
-        .PC(PC),
-        .fetch_instruction(fetch_instruction),
-        .instruction(instruction)
+    wire [4:0] opcode, rd, rs, rt;
+    wire [11:0] L;
+    instruction_decoder decoder (
+        .in(instruction),
+        .opcode(opcode),
+        .rd(rd),
+        .rs(rs),
+        .rt(rt),
+        .L(L)
     );
 
-    // Latch the fetched instruction into IR during DECODE.
-    always @(posedge clk or posedge reset) begin
-        if (reset)
-            IR <= 32'b0;
-        else if (current_state == DECODE)
-            IR <= instruction;
-    end
+    wire [63:0] reg_rs, reg_rt, reg_rd_in;
+    wire        write_en;
 
-    //--------------------------------------------------------------------
-    // Register File
-    //--------------------------------------------------------------------
-    wire [4:0]  rf_addrA, rf_addrB;
-    wire [63:0] opA, opB;
-    wire [63:0] dummy_rdOut;
-    regFile reg_file (
+    regFile rf (
         .clk(clk),
         .reset(reset),
-        .data_in(exec_result_reg),
-        .we(do_write && (dest_reg != 5'd0)),
-        .rd(dest_reg),
-        .rs(rf_addrA),
-        .rt(rf_addrB),
-        .rsOut(opA),
-        .rtOut(opB),
-        .rdOut(dummy_rdOut)
+        .data_in(reg_rd_in),
+        .we(write_en && (rd != 5'd0)),
+        .rd(rd),
+        .rs(rs),
+        .rt(rt),
+        .rdOut(),         // Unused
+        .rsOut(reg_rs),
+        .rtOut(reg_rt)
     );
 
     //--------------------------------------------------------------------
-    // Control Unit (using latched IR)
+    // ALU & FPU
     //--------------------------------------------------------------------
-    wire [63:0] ctrl_exec_result;
-    wire        ctrl_write_en;
-    wire [4:0]  ctrl_write_reg;
-    wire [4:0]  ctrl_rf_addrA;
-    wire [4:0]  ctrl_rf_addrB;
-    wire        ctrl_mem_we;
-    wire [31:0] ctrl_mem_addr;
-    wire [63:0] ctrl_mem_write_data;
-    wire [31:0] ctrl_data_load_addr;
-    wire [31:0] ctrl_next_PC;
+    wire [63:0] alu_out, fpu_out;
 
-    control ctrl_inst (
-        .current_state(current_state),
+    alu alu_inst (
+        .opcode(opcode),
+        .op1(reg_rs),
+        .op2(reg_rt),
+        .L(L),
+        .result(alu_out)
+    );
+
+    fpu fpu_inst (
+        .opcode(opcode),
+        .rs(reg_rs),
+        .rt(reg_rt),
+        .L(L),
+        .result(fpu_out)
+    );
+
+    //--------------------------------------------------------------------
+    // Control Logic
+    //--------------------------------------------------------------------
+    wire [63:0] exec_result;
+    wire [31:0] next_PC;
+
+    control control_inst (
+        .current_state(3'd0), // placeholder
         .clk(clk),
         .reset(reset),
-        .instruction(IR),  // use the latched instruction
+        .instruction(instruction),
         .PC(PC),
-        .opA(opA),
-        .opB(opB),
+        .opA(reg_rs),
+        .opB(reg_rt),
         .data_load(data_load),
-        .next_PC(ctrl_next_PC),
-        .exec_result(ctrl_exec_result),
-        .write_en(ctrl_write_en),
-        .write_reg(ctrl_write_reg),
-        .rf_addrA(ctrl_rf_addrA),
-        .rf_addrB(ctrl_rf_addrB),
-        .mem_we(ctrl_mem_we),
-        .mem_addr(ctrl_mem_addr),
-        .mem_write_data(ctrl_mem_write_data),
-        .data_load_addr(ctrl_data_load_addr)
+        .next_PC(next_PC),
+        .exec_result(exec_result),
+        .write_en(write_en),
+        .write_reg(), // unused, already have rd
+        .rf_addrA(),  // unused, already using rs
+        .rf_addrB(),  // unused, already using rt
+        .mem_we(mem_we),
+        .mem_addr(mem_store_addr),
+        .mem_write_data(mem_store_data),
+        .data_load_addr(mem_data_load_addr)
     );
 
-    assign rf_addrA             = ctrl_rf_addrA;
-    assign rf_addrB             = ctrl_rf_addrB;
-    assign mem_we               = ctrl_mem_we;
-    assign mem_store_addr       = ctrl_mem_addr;
-    assign mem_store_data       = ctrl_mem_write_data;
-    assign mem_data_load_addr   = ctrl_data_load_addr;
+    assign reg_rd_in = exec_result;
 
     //--------------------------------------------------------------------
-    // FSM and PC Update with Halt Detection in WRITEBACK
+    // Halt Detection Logic
     //--------------------------------------------------------------------
-    // Halt is detected during the WRITEBACK state.
-    always @(posedge clk or posedge reset) begin
-        if (reset) begin
-            current_state   <= FETCH;
-            PC              <= 32'h2000;
-            exec_result_reg <= 64'b0;
-            dest_reg        <= 5'd0;
-            do_write        <= 1'b0;
-            halt_reg        <= 1'b0;
-        end else begin
-            if (current_state == WRITEBACK &&
-                ((IR[31:27] == 5'h0F) || (IR == 32'b0))) begin
-                // When in WRITEBACK, if IR indicates halt, freeze the processor.
-                halt_reg <= 1'b1;
-                current_state <= current_state; // remain in WRITEBACK
-                PC <= PC;                       // freeze PC
-            end else begin
-                halt_reg <= 1'b0;
-                current_state <= next_state;
-                PC <= ctrl_next_PC;  // normal PC update
-            end
-
-            // Pipeline updates for execution result, destination register, and write enable.
-            case (current_state)
-                EXECUTE: begin
-                    exec_result_reg <= ctrl_exec_result;
-                    dest_reg        <= ctrl_write_reg;
-                    do_write        <= 1'b0;
-                end
-                MEMORY: begin
-                    exec_result_reg <= ctrl_exec_result;
-                    dest_reg        <= ctrl_write_reg;
-                    // Pipeline the write enable one cycle earlier:
-                    do_write        <= ctrl_write_en;
-                end
-                WRITEBACK: begin
-                    // Hold the previously latched do_write value.
-                    do_write <= do_write;
-                end
-                default: do_write <= 1'b0;
-            endcase
-        end
+    always_comb begin
+        if (instruction == 32'b0 || opcode == 5'h0F)
+            halt_flag = 1;
+        else
+            halt_flag = 0;
     end
 
+    assign hlt = halt_flag;
+
     //--------------------------------------------------------------------
-    // Halt Flag Assignment (output hlt)
+    // PC Update
     //--------------------------------------------------------------------
-    assign hlt = halt_reg;
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset)
+            PC <= 32'h2000;
+        else if (!halt_flag)
+            PC <= next_PC;
+        else
+            PC <= PC; // hold on halt
+    end
 
 endmodule
+
