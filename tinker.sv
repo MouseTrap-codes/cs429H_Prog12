@@ -359,7 +359,7 @@ module tinker_core (
     wire [63:0] reg_rs, reg_rt, reg_rd_in;
     wire        write_en;
 
-    regFile rf (
+    regFile regFile (
         .clk(clk),
         .reset(reset),
         .data_in(reg_rd_in),
