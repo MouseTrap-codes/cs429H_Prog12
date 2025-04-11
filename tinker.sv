@@ -347,7 +347,7 @@ module tinker_core (
     reg  [63:0] write_data;
     reg  [4:0]  write_reg;
     reg         write_enable;
-    reg_file reg_file_inst (
+    reg_file reg_file (
         .clk(clk), .reset(reset),
         .data_in(write_data),
         .write_reg(write_reg),
