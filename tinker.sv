@@ -209,7 +209,7 @@ module control(
     output reg [31:0] data_load_addr
 );
 
-    // Decode instruction fields.
+    // Decode the instruction fields.
     wire [4:0] opcode, rd, rs, rt;
     wire [11:0] L;
     instruction_decoder dec (
@@ -221,12 +221,12 @@ module control(
        .L(L)
     );
 
-    // ALU and FPU outputs.
+    // Compute ALU and FPU outputs.
     wire [63:0] alu_out, fpu_out;
     alu  alu_inst (.opcode(opcode), .op1(opA), .op2(opB), .L(L), .result(alu_out));
     fpu  fpu_inst (.opcode(opcode), .rs(opA), .rt(opB), .L(L), .result(fpu_out));
 
-    // Register‐file read addresses (unchanged by default)
+    // Default register-file read addresses.
     always @(*) begin
         rf_addrA = rs;
         rf_addrB = rt;
@@ -238,82 +238,81 @@ module control(
             5'hD:                           rf_addrA = 5'd31;
             5'hE:                           rf_addrB = rd;
             5'h13: begin rf_addrA = rd; rf_addrB = rs; end
-            default: ; // Use defaults.
+            default: ;
         endcase
     end
 
-    // Main control logic.
-    // The key change is that for ALU ops we compute exec_result only when current_state==EXECUTE;
-    // in other states (except for load operations in MEMORY) we do not override exec_result.
+    // Next PC generation (branches, jumps, etc.):
     always @(*) begin
-        // Set default outputs.
-        next_PC        = PC + 4;
-        exec_result    = 64'b0;
-        write_en       = 1'b0;
-        write_reg      = rd;
-        mem_we         = 1'b0;
-        mem_addr       = 32'b0;
-        mem_write_data = 64'b0;
-        data_load_addr = 32'b0;
-        
-        // Next PC computation may depend on opcode.
-        // (For brevity, branch and memory address logic remains unchanged.)
+        // Default: sequential execution.
+        next_PC = PC + 4;
         case (opcode)
             5'h8:  next_PC = opA;
             5'h9:  next_PC = PC + opA[31:0];
             5'hA:  next_PC = PC + {{20{L[11]}}, L};
             5'hB:  next_PC = (opA != 0) ? opB : PC + 4;
-            5'hC:  begin mem_we = 1; mem_addr = opB - 8; mem_write_data = PC + 4; next_PC = opA; end
-            5'hD:  begin data_load_addr = opA - 8; next_PC = data_load[31:0]; end
+            5'hC:  next_PC = opA; // example for branch type—adjust per your ISA.
+            5'hD:  next_PC = data_load[31:0]; // for load jump, for instance.
             5'hE:  next_PC = ($signed(opA) > $signed(opB)) ? rd : PC + 4;
-            default: ; // Otherwise, default next_PC = PC + 4.
+            default: next_PC = PC + 4;
         endcase
+    end
 
-        // For exec_result:
-        if (current_state == 3'd2) begin  // EXECUTE state.
-            case (opcode)
-                // For ALU ops.
-                5'h18, 5'h1a, 5'h1c, 5'h1d,
-                5'h0,  5'h1,  5'h2, 5'h3, 5'h4, 5'h6,
-                5'h19, 5'h1b, 5'h5, 5'h7, 5'h12:
-                    exec_result = alu_out;
-                // For floating point ops.
-                5'h14, 5'h15, 5'h16, 5'h17:
-                    exec_result = fpu_out;
-                default: ;
-            endcase
-        end else if (current_state == 3'd3) begin  // MEMORY state.
-            // For a load instruction (opcode 5'h10), capture the loaded data.
-            if (opcode == 5'h10) begin
+    // Execution result: compute based solely on opcode (ignoring current_state).
+    // The top-level pipeline will latch this value during EXECUTE.
+    always @(*) begin
+        case (opcode)
+            // ALU operations:
+            5'h18, 5'h1a, 5'h1c, 5'h1d,
+            5'h0,  5'h1,  5'h2, 5'h3, 5'h4, 5'h6,
+            5'h19, 5'h1b, 5'h5, 5'h7, 5'h12:
+                exec_result = alu_out;
+            // FPU operations:
+            5'h14, 5'h15, 5'h16, 5'h17:
+                exec_result = fpu_out;
+            // Load: use data loaded from memory.
+            5'h10: begin
                 data_load_addr = opA + {{52{L[11]}}, L};
                 exec_result = data_load;
-            end else if (opcode == 5'h11) begin
-                exec_result = opA;
             end
-            // For other ALU ops, leave exec_result unchanged (it should be held from EXECUTE).
-        end
+            // A move (immediate) instruction:
+            5'h11: exec_result = opA;
+            default: exec_result = 64'b0;
+        endcase
+    end
 
-        // In WRITEBACK state, determine write control.
-        if (current_state == 3'd4) begin
-            case (opcode)
-                5'h18, 5'h19, 5'h1a, 5'h1b, 5'h1c, 5'h1d,
-                5'h0,  5'h1,  5'h2, 5'h3, 5'h4, 5'h5, 5'h6, 5'h7, 5'h12: begin
-                    write_en  = 1'b1;
-                    write_reg = rd;
-                end
-                5'h14, 5'h15, 5'h16, 5'h17: begin
-                    write_en  = 1'b1;
-                    write_reg = rd;
-                end
-                5'h10: begin
-                    write_en  = 1'b1;
-                    write_reg = rd;
-                end
-                default: ;
-            endcase
+    // Write-back control:
+    always @(*) begin
+        case (opcode)
+            5'h18, 5'h19, 5'h1a, 5'h1b, 5'h1c, 5'h1d,
+            5'h0, 5'h1, 5'h2, 5'h3, 5'h4, 5'h5, 5'h6, 5'h7, 5'h12,
+            5'h14, 5'h15, 5'h16, 5'h17,
+            5'h10: begin
+                write_en = 1'b1;
+                write_reg = rd;
+            end
+            default: begin
+                write_en = 1'b0;
+                write_reg = rd;
+            end
+        endcase
+    end
+
+    // Memory store operation: for example, opcode 5'h13 might be a store.
+    always @(*) begin
+        if (opcode == 5'h13) begin
+            mem_we         = 1'b1;
+            mem_addr       = opA + {{52{L[11]}}, L};
+            mem_write_data = opB;
+        end else begin
+            mem_we         = 1'b0;
+            mem_addr       = 32'b0;
+            mem_write_data = 64'b0;
         end
     end
+
 endmodule
+
 
 
 //=====================================================================
