@@ -1,4 +1,4 @@
-// instruction decoder
+// instruction_decoder.v
 module instruction_decoder(
     input  [31:0] in,       // 32-bit instruction
     output [4:0]  opcode,   // Bits [31:27]
@@ -14,7 +14,7 @@ module instruction_decoder(
     assign L      = in[11:0];
 endmodule
 
-// alu
+// alu.v
 module alu (
     input  [4:0]  opcode,
     input  [63:0] op1,       // First operand
@@ -26,7 +26,7 @@ module alu (
         case (opcode)
             // Integer arithmetic
             5'h18: result = op1 + op2;                   // add
-            5'h19: result = op1 + {{52{L[11]}}, L};             // addi
+            5'h19: result = op1 + {{52{L[11]}}, L};       // addi
             5'h1a: result = op1 - op2;                   // sub
             5'h1b: result = op1 - {52'b0, L};             // subi
             5'h1c: result = op1 * op2;                   // mul
@@ -52,8 +52,7 @@ module alu (
     end
 endmodule
 
-
-// FPU
+// fpu.v
 module fpu (
     input  [4:0]  opcode,
     input  [63:0] rs,         // Operand 1
@@ -76,8 +75,7 @@ module fpu (
     end
 endmodule
 
-
-// regFile
+// regFile.v
 module regFile (
     input         clk,
     input         reset,
@@ -118,9 +116,7 @@ module regFile (
     end
 endmodule
 
-
-
-// memory
+// memory.v
 module memory(
    input clk,
    input reset,
@@ -176,8 +172,7 @@ module memory(
     };
 endmodule
 
-
-// fetch
+// fetch.v
 module fetch(
     input  [31:0] PC,
     input  [31:0] fetch_instruction,
@@ -186,8 +181,7 @@ module fetch(
     assign instruction = fetch_instruction;
 endmodule
 
-
-// control.sv
+// control.v
 module control(
     input      [2:0] current_state,  // Global FSM state (used only for branch/memory signals)
     input            clk,
@@ -314,14 +308,11 @@ module control(
 
 endmodule
 
-
-
-//=====================================================================
+// tinker_core.v
 // CORRECTED TINKER CORE (MULTICYCLE, NO DEDICATED HALT STATE)
 // Halt is detected during WRITEBACK: if the latched instruction (IR)
 // is either 32'b0 or has halt opcode 5'h0F, then on posedge clk the
 // halt flag is set and PC/FSM updates are frozen.
-//=====================================================================
 module tinker_core(
     input  clk,
     input  reset,
@@ -463,11 +454,7 @@ module tinker_core(
     //--------------------------------------------------------------------
     // FSM and PC Update with Halt Detection in WRITEBACK
     //--------------------------------------------------------------------
-    // Instead of halting immediately on any posedge clk when IR is 0,
-    // we now check for halt only during the WRITEBACK state.
-    // If we're in WRITEBACK and the latched instruction's opcode equals 5'h0F
-    // or the entire instruction is 0, then on that clock edge we assert hlt
-    // and freeze PC and state.
+    // Halt is detected during the WRITEBACK state.
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             current_state   <= FETCH;
@@ -489,7 +476,7 @@ module tinker_core(
                 PC <= ctrl_next_PC;  // normal PC update
             end
 
-            // Pipeline updates for execution result and destination register:
+            // Pipeline updates for execution result, destination register, and write enable.
             case (current_state)
                 EXECUTE: begin
                     exec_result_reg <= ctrl_exec_result;
@@ -497,13 +484,14 @@ module tinker_core(
                     do_write        <= 1'b0;
                 end
                 MEMORY: begin
-                    // For load instructions (opcode 5'h10), ctrl_exec_result should be the loaded data.
                     exec_result_reg <= ctrl_exec_result;
                     dest_reg        <= ctrl_write_reg;
-                    do_write        <= 1'b0;
+                    // Pipeline the write enable one cycle earlier:
+                    do_write        <= ctrl_write_en;
                 end
                 WRITEBACK: begin
-                    do_write <= ctrl_write_en;
+                    // Hold the previously latched do_write value.
+                    do_write <= do_write;
                 end
                 default: do_write <= 1'b0;
             endcase
@@ -516,11 +504,3 @@ module tinker_core(
     assign hlt = halt_reg;
 
 endmodule
-
-
-
-
-
-
-
-
