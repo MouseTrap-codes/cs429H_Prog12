@@ -181,6 +181,7 @@ endmodule
 
 
 // control.sv
+// control.sv
 module control(
     input      [2:0] current_state,  // Global FSM state
     input            clk,
@@ -201,24 +202,25 @@ module control(
     output reg [63:0] mem_write_data,
     output reg [31:0] data_load_addr
 );
-    // decode
+    // Decode fields
     wire [4:0] opcode, rd, rs, rt;
     wire [11:0] L;
     instruction_decoder dec (
-       .in(instruction),
-       .opcode(opcode),
-       .rd(rd), .rs(rs), .rt(rt), .L(L)
+        .in(instruction),
+        .opcode(opcode),
+        .rd(rd), .rs(rs), .rt(rt), .L(L)
     );
 
-    // ALU / FPU outputs
+    // ALU & FPU results
     wire [63:0] alu_out, fpu_out;
-    alu  alu_inst (.opcode(opcode), .op1(opA), .op2(opB), .L(L), .result(alu_out));
-    fpu  fpu_inst (.opcode(opcode), .rs(opA), .rt(opB), .L(L), .result(fpu_out));
+    alu alu_inst   (.opcode(opcode), .op1(opA), .op2(opB), .L(L), .result(alu_out));
+    fpu fpu_inst   (.opcode(opcode), .rs(opA), .rt(opB), .L(L), .result(fpu_out));
 
-    // register‐file read addresses (unchanged)
+    // Register‐file read addresses
     always @(*) begin
-        rf_addrA = rs; rf_addrB = rt;
-        case(opcode)
+        rf_addrA = rs;
+        rf_addrB = rt;
+        case (opcode)
             5'h19,5'h1b,5'h5,5'h7,5'h12: rf_addrA = rd;
             5'hb:                      rf_addrB = rd;
             5'h8,5'h9:                 rf_addrA = rd;
@@ -230,9 +232,9 @@ module control(
         endcase
     end
 
-    // main control
+    // Main control FSM outputs
     always @(*) begin
-        // defaults
+        // Default values
         next_PC        = PC + 4;
         exec_result    = 64'b0;
         write_en       = 1'b0;
@@ -244,72 +246,49 @@ module control(
 
         case (current_state)
         //--------------------------------------------------
-        3'd2: begin // EXECUTE
-            // only compute ALU/FPU, but do NOT write back here
+        3'd2: begin // EXECUTE stage: compute and write back immediately
             case (opcode)
-                // ALU ops
-                5'h18,5'h1a,5'h1c,5'h1d,
-                5'h0,5'h1,5'h2,5'h3,5'h4,5'h6,
-                5'h19,5'h1b,5'h5,5'h7,5'h12:
+                // Integer arithmetic & logic & immediates & shifts & mov reg/reg-immediate
+                5'h18,5'h19,5'h1a,5'h1b,5'h1c,5'h1d,  // add, addi, sub, subi, mul, div
+                5'h0,5'h1,5'h2,5'h3,                  // and, or, xor, not
+                5'h4,5'h5,5'h6,5'h7,                  // shifts
+                5'h11,5'h12:                         // mov rd, rs / mov rd, L
+            begin
+                // select ALU or immediate or mov
+                if (opcode >= 5'h14 && opcode <= 5'h17) begin
+                    // will not match here
+                end else if (opcode == 5'h11) begin
+                    exec_result = opA;
+                end else if (opcode == 5'h12) begin
+                    exec_result = opA;
+                    exec_result[11:0] = L;
+                end else begin
                     exec_result = alu_out;
-                    write_en    = 1'b1;
-                    write_reg   = rd;
-                // FPU ops
-                5'h14,5'h15,5'h16,5'h17:
+                end
+
+                write_en  = 1'b1;
+                write_reg = rd;
+            end
+
+                // Floating point
+                5'h14,5'h15,5'h16,5'h17: begin  // addf, subf, mulf, divf
                     exec_result = fpu_out;
                     write_en    = 1'b1;
                     write_reg   = rd;
-                default: ;
+                end
+
+                default: ; // no write
             endcase
         end
 
         //--------------------------------------------------
-        3'd3: begin // MEMORY
+        3'd3: begin // MEMORY stage: branches, loads, stores
             case (opcode)
+                // Branches
                 5'h8:  next_PC = opA;
                 5'h9:  next_PC = PC + opA[31:0];
-                5'ha:  next_PC = PC + {{20{L[11]}},L};
-                5'hb:  next_PC = (opA!=0) ? opB : PC+4;
-                5'hc:  begin mem_we=1; mem_addr=opB-8; mem_write_data=PC+4; next_PC=opA; end
-                5'hd:  begin data_load_addr=opA-8; next_PC=data_load[31:0]; end
-                5'he:  next_PC = ($signed(opA)>$signed(opB))? rd : PC+4;
-                5'h10: begin data_load_addr=opA+{{52{L[11]}},L}; exec_result=data_load; end
-                5'h11: begin exec_result=opA; end
-                5'h13: begin mem_we=1; mem_addr=opA+{{52{L[11]}},L}; mem_write_data=opB; end
-                default: ;
-            endcase
-        end
+                5'ha:  next_PC = PC + {{20{L[11]}}, L_
 
-        //--------------------------------------------------
-        // 3'd4: begin // WRITEBACK
-        //     // now actually write the value computed in EX or MEM
-        //     case (opcode)
-        //         // integer/immediate/logical shifts & mov/reg‐to‐reg
-        //         5'h18,5'h19,5'h1a,5'h1b,5'h1c,5'h1d,
-        //         5'h0,5'h1,5'h2,5'h3,5'h4,5'h5,5'h6,5'h7,5'h12: begin
-        //             write_en    = 1'b1;
-        //             write_reg   = rd;
-        //             // exec_result was set back in EX
-        //         end
-        //         // floating point
-        //         5'h14,5'h15,5'h16,5'h17: begin
-        //             write_en    = 1'b1;
-        //             write_reg   = rd;
-        //         end
-        //         // load
-        //         5'h10: begin
-        //             write_en    = 1'b1;
-        //             write_reg   = rd;
-        //             // exec_result was set in MEM
-        //         end
-        //         default: ;
-        //     endcase
-        // end
-
-        default: ;
-        endcase
-    end
-endmodule
 
 // tinker core
 module tinker_core(
