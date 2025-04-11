@@ -94,7 +94,7 @@ module regFile (
     integer i;
     
     // Write process (synchronous)
-    always @(posedge clk or reset) begin
+    always @(posedge clk or posedge reset) begin
         if (reset) begin
             for (i = 0; i < 31; i = i + 1)
                 registers[i] <= 64'b0;
