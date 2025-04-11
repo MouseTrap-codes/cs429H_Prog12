@@ -150,22 +150,22 @@ module memory(
     
     // Instruction fetch (big-endian)
     assign fetch_instruction = { 
-        bytes[fetch_addr+3],
-        bytes[fetch_addr+2],
+        bytes[fetch_addr],
         bytes[fetch_addr+1],
-        bytes[fetch_addr]
+        bytes[fetch_addr+2],
+        bytes[fetch_addr+3]
     };
     
     // Data load (big-endian)
     assign data_load = { 
-        bytes[data_load_addr+7],
-        bytes[data_load_addr+6],
-        bytes[data_load_addr+5],
-        bytes[data_load_addr+4],
-        bytes[data_load_addr+3],
-        bytes[data_load_addr+2],
+        bytes[data_load_addr],
         bytes[data_load_addr+1],
-        bytes[data_load_addr]
+        bytes[data_load_addr+2],
+        bytes[data_load_addr+3],
+        bytes[data_load_addr+4],
+        bytes[data_load_addr+5],
+        bytes[data_load_addr+5],
+        bytes[data_load_addr+7]
     };
 endmodule
 
