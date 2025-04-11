@@ -411,15 +411,15 @@ module tinker_core(
 
    
     always @(posedge clk) begin
-         if (instruction[31:27] = 5'h0f && (state_t == DECODE || state_t = EXECUTE)) {
+         if (instruction[31:27] == 5'h0f && (current_state == DECODE || current_state = EXECUTE)) begin
             hlt = 1;
-         } else {
+         end else begin
             hlt = 0;
-         }
+         end
     end
 
     // FSM: Next state logic (simple 5‑stage cycle; adjust if needed)
-    always @(*) begin
+    always @(posedge clk) begin
         case (current_state)
             FETCH:     next_state = DECODE;
             DECODE:    next_state = EXECUTE;
