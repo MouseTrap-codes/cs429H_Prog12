@@ -382,7 +382,8 @@ endmodule
 // tinker core
 module tinker_core(
     input clk,
-    input reset
+    input reset,
+    output logic hlt
 );
     // State encoding:
     typedef enum logic [2:0] {
@@ -446,6 +447,15 @@ module tinker_core(
         .fetch_instruction(fetch_instruction),
         .instruction(instruction)
     );
+
+    // halt bs
+    always @(*) begin
+        if (instruction[31:27] == h0xf) begin
+            hlt = 1
+        end else begin
+            hlt = 0;
+        end
+    end
     
     // Instantiate register file.
     wire [4:0]  rf_addrA;
