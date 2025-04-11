@@ -307,56 +307,87 @@ module control(
     end
 endmodule
 
-// tinker core
 module tinker_core(
-    input clk,
-    input reset,
+    input  clk,
+    input  reset,
     output logic hlt
 );
-    // State encoding:
+    // Extend FSM state encoding to include a HALT state.
     typedef enum logic [2:0] {
         FETCH     = 3'd0,
         DECODE    = 3'd1,
         EXECUTE   = 3'd2,
         MEMORY    = 3'd3,
-        WRITEBACK = 3'd4
+        WRITEBACK = 3'd4,
+        HALT      = 3'd5   // New halt state.
     } state_t;
 
     state_t current_state, next_state;
-    
-    // Program Counter (PC) register.
     reg [31:0] PC;
-    
-    // FSM: State register update
+
+    // ------------------------------------------------------------------------
+    // FSM State Register Update and PC Update:
+    // When reset, start in FETCH and initialize the PC.
+    // If in HALT state, freeze PC; otherwise update using control output.
+    // ------------------------------------------------------------------------
     always @(posedge clk or posedge reset) begin
-        if (reset)
+        if (reset) begin
             current_state <= FETCH;
-        else
+            PC <= 32'h2000;
+        end else begin
             current_state <= next_state;
+            if (current_state != HALT)
+                PC <= ctrl_next_PC;
+            else
+                PC <= PC;  // Freeze PC in HALT state.
+        end
     end
 
-    // FSM: Next state logic (simple 5‑stage cycle; adjust if needed)
+    // ------------------------------------------------------------------------
+    // Next-State Logic:
+    // If already halted, remain in HALT.
+    // Otherwise, if in DECODE or EXECUTE and a halt instruction is seen,
+    // transition to HALT; else, follow the normal 5-stage cycle.
+    // ------------------------------------------------------------------------
+    // The fetched instruction is needed here.
+    wire [31:0] instruction;
     always @(*) begin
-        case (current_state)
-            FETCH:     next_state = DECODE;
-            DECODE:    next_state = EXECUTE;
-            EXECUTE:   next_state = MEMORY;
-            MEMORY:    next_state = WRITEBACK;
-            WRITEBACK: next_state = FETCH;
-            default:   next_state = FETCH;
-        endcase
+        if (current_state == HALT)
+            next_state = HALT;
+        else if ((current_state == DECODE || current_state == EXECUTE) &&
+                 (instruction[31:27] == 5'h0f))
+            next_state = HALT;
+        else begin
+            case (current_state)
+                FETCH:     next_state = DECODE;
+                DECODE:    next_state = EXECUTE;
+                EXECUTE:   next_state = MEMORY;
+                MEMORY:    next_state = WRITEBACK;
+                WRITEBACK: next_state = FETCH;
+                default:   next_state = FETCH;
+            endcase
+        end
     end
 
-    // Instantiate memory module.
+    // ------------------------------------------------------------------------
+    // Drive the Halt Output: hlt will be 1 when in the HALT state.
+    // ------------------------------------------------------------------------
+    always @(*) begin
+        hlt = (current_state == HALT);
+    end
+
+    // ------------------------------------------------------------------------
+    // Memory module instance.
+    // ------------------------------------------------------------------------
     wire [31:0] fetch_instruction;
     wire [63:0] data_load;
-    // Data load and store signals:
+    // Signals for data load and store.
     wire [31:0] mem_data_load_addr;
     wire        mem_we;
     wire [31:0] mem_store_addr;
     wire [63:0] mem_store_data;
     
-    memory memory (
+    memory memory_inst (
         .clk(clk),
         .reset(reset),
         .fetch_addr(PC),
@@ -368,26 +399,19 @@ module tinker_core(
         .store_data(mem_store_data)
     );
     
-    // Instantiate fetch module.
-    wire [31:0] instruction;
+    // ------------------------------------------------------------------------
+    // Fetch module instance.
+    // ------------------------------------------------------------------------
     fetch fetch_inst (
         .PC(PC),
         .fetch_instruction(fetch_instruction),
         .instruction(instruction)
     );
 
-    // halt bs
-    always @(*) begin
-        // only asser halt in DECODE or later
-        if ((current_state == DECODE || current_state == EXECUTE)
-        && instruction[31:27] == 5'h0f)
-            hlt = 1;
-        else 
-            hlt = 0; 
-    end 
-
-
-    // Instantiate register file.
+    // ------------------------------------------------------------------------
+    // Register File instantiation.
+    // In HALT mode, disable any write operations.
+    // ------------------------------------------------------------------------
     wire [4:0]  rf_addrA;
     wire [4:0]  rf_addrB;
     wire [63:0] opA, opB;
@@ -399,16 +423,19 @@ module tinker_core(
         .clk(clk),
         .reset(reset),
         .data_in(write_data),
-        .we(write_en),
+        // If halted, force write enable low.
+        .we(hlt ? 1'b0 : write_en),
         .rd(write_reg),
         .rs(rf_addrA),
         .rt(rf_addrB),
         .rsOut(opA),
         .rtOut(opB),
-        .rdOut()  // if you wish, you can capture the write-back output here
+        .rdOut()  
     );
     
-    // Instantiate control module.
+    // ------------------------------------------------------------------------
+    // Control module instance.
+    // ------------------------------------------------------------------------
     wire [31:0] ctrl_next_PC;
     wire [63:0] ctrl_exec_result;
     wire        ctrl_write_en;
@@ -441,26 +468,21 @@ module tinker_core(
         .data_load_addr(ctrl_data_load_addr)
     );
     
-    // Connect control outputs to register file and memory.
+    // Connect register file read addresses.
     assign rf_addrA = ctrl_rf_addrA;
     assign rf_addrB = ctrl_rf_addrB;
     
+    // Assign write-back signals.
     always @(*) begin
         write_data = ctrl_exec_result;
         write_en   = ctrl_write_en;
         write_reg  = ctrl_write_reg;
     end
     
+    // Connect memory-related signals.
     assign mem_we             = ctrl_mem_we;
     assign mem_store_addr     = ctrl_mem_addr;
     assign mem_store_data     = ctrl_mem_write_data;
     assign mem_data_load_addr = ctrl_data_load_addr;
     
-    // PC update.
-    always @(posedge clk) begin
-        if (reset)
-            PC <= 32'h2000;
-        else
-            PC <= ctrl_next_PC;
-    end
 endmodule
