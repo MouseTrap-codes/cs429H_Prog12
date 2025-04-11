@@ -450,7 +450,7 @@ module tinker_core(
 
     // halt bs
     always @(*) begin
-        if (instruction[31:27] == h0xf) begin
+        if (instruction[31:27] == 5'h0f) begin
             hlt = 1;
         end else begin
             hlt = 0;
