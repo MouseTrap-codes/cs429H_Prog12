@@ -330,7 +330,7 @@ module tinker_core (
     wire [31:0] mem_store_addr;
     wire [63:0] mem_store_data;
 
-    memory mem_inst (
+    memory memory (
         .clk(clk),
         .reset(reset),
         .fetch_addr(PC),
