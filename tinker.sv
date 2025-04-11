@@ -164,7 +164,7 @@ module memory(
         bytes[data_load_addr+3],
         bytes[data_load_addr+4],
         bytes[data_load_addr+5],
-        bytes[data_load_addr+5],
+        bytes[data_load_addr+6],
         bytes[data_load_addr+7]
     };
 endmodule
