@@ -92,7 +92,7 @@ module control (
 endmodule
 
 //=====================================================================
-// REG_FILE MODULE (with reset)
+// REG_FILE MODULE (with reset, unrolled for testbench visibility)
 //=====================================================================
 module reg_file (
     input         clk,
@@ -108,14 +108,43 @@ module reg_file (
     output reg [63:0] rtOut
 );
     parameter MEM_SIZE = 524288;
+    // testbench expects this exact name:
     reg [63:0] registers [0:31];
-    integer i;
 
-    // On reset, clear r0–r30, set r31 = MEM_SIZE
+    // On reset, zero registers[0]..[30], set registers[31]=MEM_SIZE
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            for (i = 0; i < 31; i = i + 1)
-                registers[i] <= 64'b0;
+            registers[ 0] <= 64'b0;
+            registers[ 1] <= 64'b0;
+            registers[ 2] <= 64'b0;
+            registers[ 3] <= 64'b0;
+            registers[ 4] <= 64'b0;
+            registers[ 5] <= 64'b0;
+            registers[ 6] <= 64'b0;
+            registers[ 7] <= 64'b0;
+            registers[ 8] <= 64'b0;
+            registers[ 9] <= 64'b0;
+            registers[10] <= 64'b0;
+            registers[11] <= 64'b0;
+            registers[12] <= 64'b0;
+            registers[13] <= 64'b0;
+            registers[14] <= 64'b0;
+            registers[15] <= 64'b0;
+            registers[16] <= 64'b0;
+            registers[17] <= 64'b0;
+            registers[18] <= 64'b0;
+            registers[19] <= 64'b0;
+            registers[20] <= 64'b0;
+            registers[21] <= 64'b0;
+            registers[22] <= 64'b0;
+            registers[23] <= 64'b0;
+            registers[24] <= 64'b0;
+            registers[25] <= 64'b0;
+            registers[26] <= 64'b0;
+            registers[27] <= 64'b0;
+            registers[28] <= 64'b0;
+            registers[29] <= 64'b0;
+            registers[30] <= 64'b0;
             registers[31] <= MEM_SIZE;
         end
         else if (we && (write_reg != 5'd0)) begin
@@ -130,6 +159,7 @@ module reg_file (
         rtOut = registers[rt];
     end
 endmodule
+
 
 //=====================================================================
 // (Other modules: memory, instruction_decoder, alu, fpu)
