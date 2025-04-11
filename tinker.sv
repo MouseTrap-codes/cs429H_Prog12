@@ -26,7 +26,7 @@ module alu (
         case (opcode)
             // Integer arithmetic
             5'h18: result = op1 + op2;                   // add
-            5'h19: result = op1 + {52'b0, L};             // addi
+            5'h19: result = op1 + {{52{L[11]}}, L};             // addi
             5'h1a: result = op1 - op2;                   // sub
             5'h1b: result = op1 - {52'b0, L};             // subi
             5'h1c: result = op1 * op2;                   // mul
