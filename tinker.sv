@@ -318,8 +318,9 @@ endmodule
 
 //=====================================================================
 // CORRECTED TINKER CORE (MULTICYCLE, NO DEDICATED HALT STATE)
-// Halt is detected on a posedge clk and then hlt is asserted and
-// state/PC updates are frozen.
+// Halt is detected on posedge clk if the latched instruction is either
+// a halt opcode (assumed to be 5'h0F) or is 32'b0. In that case, hlt is set
+// and PC/FSM updates freeze.
 //=====================================================================
 module tinker_core(
     input  clk,
@@ -327,7 +328,7 @@ module tinker_core(
     output logic hlt
 );
 
-    // FSM state encoding (5 states for normal instruction execution)
+    // FSM state encoding: five states for normal instruction execution.
     typedef enum logic [2:0] {
         FETCH     = 3'd0,
         DECODE    = 3'd1,
@@ -338,21 +339,25 @@ module tinker_core(
 
     state_t current_state, next_state;
     reg [31:0] PC;
-    reg [31:0] IR;       // Instruction Register (latched in DECODE)
+    reg [31:0] IR;  // Instruction Register (latched in DECODE)
 
     // Pipeline registers for write-back signals.
     reg [63:0] exec_result_reg;
     reg [4:0]  dest_reg;
     reg        do_write;
 
-    // Next-state logic: simple 5‑state FSM for normal instructions.
+    // Check if the latched instruction is a "halt": either opcode==5'h0F
+    // or the entire instruction equals 0.
+    wire halt_inst = (IR[31:27] == 5'h0F) || (IR == 32'b0);
+
+    // Next-state logic (5-state FSM for normal instruction execution).
     always @(*) begin
         case (current_state)
             FETCH:     next_state = DECODE;
             DECODE:    next_state = EXECUTE;
             EXECUTE:   next_state = MEMORY;
             MEMORY:    next_state = WRITEBACK;
-            WRITEBACK: next_state = FETCH;  // normally return to FETCH
+            WRITEBACK: next_state = FETCH;
             default:   next_state = FETCH;
         endcase
     end
@@ -360,8 +365,6 @@ module tinker_core(
     //--------------------------------------------------------------------
     // Memory Interface
     //--------------------------------------------------------------------
-    // Instantiate memory with instance name "memory" (as expected by the autograder).
-    // The "bytes" array is declared with (* keep *) in the memory module.
     wire [31:0] fetch_instruction;
     wire [63:0] data_load;
     wire [31:0] mem_data_load_addr;
@@ -369,7 +372,7 @@ module tinker_core(
     wire [31:0] mem_store_addr;
     wire [63:0] mem_store_data;
 
-    memory memory (  
+    memory memory (
         .clk(clk),
         .reset(reset),
         .fetch_addr(PC),
@@ -391,7 +394,7 @@ module tinker_core(
         .instruction(instruction)
     );
 
-    // Latch the fetched instruction into IR in the DECODE stage.
+    // Latch the fetched instruction into IR during the DECODE stage.
     always @(posedge clk or posedge reset) begin
         if (reset)
             IR <= 32'b0;
@@ -402,7 +405,7 @@ module tinker_core(
     //--------------------------------------------------------------------
     // Register File
     //--------------------------------------------------------------------
-    // The regFile module remains unchanged.
+    // The regFile module remains as defined.
     wire [4:0]  rf_addrA, rf_addrB;
     wire [63:0] opA, opB;
     wire [63:0] dummy_rdOut;
@@ -420,9 +423,8 @@ module tinker_core(
     );
 
     //--------------------------------------------------------------------
-    // Control Unit
+    // Control Unit (using the latched IR)
     //--------------------------------------------------------------------
-    // Pass the latched instruction (IR) into the control unit.
     wire [63:0] ctrl_exec_result;
     wire        ctrl_write_en;
     wire [4:0]  ctrl_write_reg;
@@ -438,7 +440,7 @@ module tinker_core(
         .current_state(current_state),
         .clk(clk),
         .reset(reset),
-        .instruction(IR),   // using the latched instruction
+        .instruction(IR),  // use latched instruction
         .PC(PC),
         .opA(opA),
         .opB(opB),
@@ -455,19 +457,17 @@ module tinker_core(
         .data_load_addr(ctrl_data_load_addr)
     );
 
-    assign rf_addrA           = ctrl_rf_addrA;
-    assign rf_addrB           = ctrl_rf_addrB;
-    assign mem_we             = ctrl_mem_we;
-    assign mem_store_addr     = ctrl_mem_addr;
-    assign mem_store_data     = ctrl_mem_write_data;
-    assign mem_data_load_addr = ctrl_data_load_addr;
+    assign rf_addrA             = ctrl_rf_addrA;
+    assign rf_addrB             = ctrl_rf_addrB;
+    assign mem_we               = ctrl_mem_we;
+    assign mem_store_addr       = ctrl_mem_addr;
+    assign mem_store_data       = ctrl_mem_write_data;
+    assign mem_data_load_addr   = ctrl_data_load_addr;
 
     //--------------------------------------------------------------------
     // FSM State and PC Update with Immediate Halt Detection
     //--------------------------------------------------------------------
-    // We remove a dedicated halt state. Instead, on each posedge clk we check if the
-    // latched instruction (IR) is a halt instruction (opcode == 5'h0F). If so, we set
-    // the halt flag (hlt) and freeze PC and state updates.
+    // On each posedge clk, if the latched IR indicates a halt, then set hlt=1 and freeze state and PC updates.
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             current_state   <= FETCH;
@@ -477,19 +477,18 @@ module tinker_core(
             do_write        <= 1'b0;
             hlt             <= 1'b0;
         end else begin
-            // If the latched instruction is halt, then on this posedge, set hlt=1 and freeze state/PC.
-            if (IR[31:27] == 5'h0F) begin
+            if (halt_inst) begin
+                // If a halt instruction is detected, assert hlt and freeze state and PC.
                 hlt <= 1'b1;
-                // Freeze state and PC updates:
-                current_state <= current_state;  
-                PC <= PC;
+                current_state <= current_state;  // freeze state
+                PC <= PC;                        // freeze PC
             end else begin
                 hlt <= 1'b0;
                 current_state <= next_state;
                 PC <= ctrl_next_PC;  // normal PC update
             end
 
-            // Pipeline updates for execution result and destination register:
+            // Pipeline updates for execution result and destination register.
             case (current_state)
                 EXECUTE: begin
                     exec_result_reg <= ctrl_exec_result;
@@ -511,11 +510,12 @@ module tinker_core(
     end
 
     //--------------------------------------------------------------------
-    // Halt Flag (output)
+    // The halt flag is driven by the logic above.
     //--------------------------------------------------------------------
-    // The halt flag is driven by the logic in the always block.
+    // Once hlt is asserted, it remains high.
     
 endmodule
+
 
 
 
