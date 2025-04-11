@@ -90,27 +90,28 @@ module regFile (
     output reg [63:0] rsOut, // Data out port A
     output reg [63:0] rtOut  // Data out port B
 );
+    // 32 registers of 64 bits each.
     reg [63:0] registers [0:31];
     integer i;
     
-    // Write process (synchronous)
-    always @(posedge clk or posedge reset) begin
+    // On reset, only initialize register 31.
+    // Registers 0-30 are left unchanged so that any externally loaded state is preserved.
+    always @(posedge clk) begin
         if (reset) begin
-            for (i = 0; i < 31; i = i + 1)
-                //registers[i] <= 64'b0;
             registers[31] <= 64'h80000;
         end else if (we) begin
             registers[rd] <= data_in;
         end
     end
     
-    // Combinational read
+    // Combinational read ports.
     always @(*) begin
         rdOut = registers[rd];
         rsOut = registers[rs];
         rtOut = registers[rt];
     end
 endmodule
+
 
 
 // memory
