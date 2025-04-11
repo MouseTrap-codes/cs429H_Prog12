@@ -98,7 +98,7 @@ module regFile (
         if (reset) begin
             for (i = 0; i < 31; i = i + 1)
                 registers[i] <= 64'b0;
-            registers[31] <= 64'h10000;
+            registers[31] <= 64'80000;
         end else if (we) begin
             registers[rd] <= data_in;
         end
