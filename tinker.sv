@@ -97,7 +97,7 @@ module regFile (
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             for (i = 0; i < 31; i = i + 1)
-                registers[i] <= 64'b0;
+                //registers[i] <= 64'b0;
             registers[31] <= 64'h80000;
         end else if (we) begin
             registers[rd] <= data_in;
