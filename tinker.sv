@@ -384,7 +384,7 @@ module tinker_core(
             hlt = 1;
         else 
             hlt = 0; 
-    end
+    end 
 
 
     // Instantiate register file.
