@@ -252,9 +252,13 @@ module control(
                 5'h0,5'h1,5'h2,5'h3,5'h4,5'h6,
                 5'h19,5'h1b,5'h5,5'h7,5'h12:
                     exec_result = alu_out;
+                    write_en    = 1'b1;
+                    write_reg   = rd;
                 // FPU ops
                 5'h14,5'h15,5'h16,5'h17:
                     exec_result = fpu_out;
+                    write_en    = 1'b1;
+                    write_reg   = rd;
                 default: ;
             endcase
         end
@@ -277,30 +281,30 @@ module control(
         end
 
         //--------------------------------------------------
-        3'd4: begin // WRITEBACK
-            // now actually write the value computed in EX or MEM
-            case (opcode)
-                // integer/immediate/logical shifts & mov/reg‐to‐reg
-                5'h18,5'h19,5'h1a,5'h1b,5'h1c,5'h1d,
-                5'h0,5'h1,5'h2,5'h3,5'h4,5'h5,5'h6,5'h7,5'h12: begin
-                    write_en    = 1'b1;
-                    write_reg   = rd;
-                    // exec_result was set back in EX
-                end
-                // floating point
-                5'h14,5'h15,5'h16,5'h17: begin
-                    write_en    = 1'b1;
-                    write_reg   = rd;
-                end
-                // load
-                5'h10: begin
-                    write_en    = 1'b1;
-                    write_reg   = rd;
-                    // exec_result was set in MEM
-                end
-                default: ;
-            endcase
-        end
+        // 3'd4: begin // WRITEBACK
+        //     // now actually write the value computed in EX or MEM
+        //     case (opcode)
+        //         // integer/immediate/logical shifts & mov/reg‐to‐reg
+        //         5'h18,5'h19,5'h1a,5'h1b,5'h1c,5'h1d,
+        //         5'h0,5'h1,5'h2,5'h3,5'h4,5'h5,5'h6,5'h7,5'h12: begin
+        //             write_en    = 1'b1;
+        //             write_reg   = rd;
+        //             // exec_result was set back in EX
+        //         end
+        //         // floating point
+        //         5'h14,5'h15,5'h16,5'h17: begin
+        //             write_en    = 1'b1;
+        //             write_reg   = rd;
+        //         end
+        //         // load
+        //         5'h10: begin
+        //             write_en    = 1'b1;
+        //             write_reg   = rd;
+        //             // exec_result was set in MEM
+        //         end
+        //         default: ;
+        //     endcase
+        // end
 
         default: ;
         endcase
