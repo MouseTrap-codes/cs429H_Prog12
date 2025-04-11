@@ -21,7 +21,7 @@ module alu (
     input  [63:0] op2,       // Second operand
     input  [11:0] L,         // 12-bit literal/immediate
     output reg [63:0] result // Result
-);
+);a
     always @(*) begin
         case (opcode)
             // Integer arithmetic
@@ -94,11 +94,11 @@ module regFile (
     integer i;
     
     // Write process (synchronous)
-    always @(posedge clk) begin
+    always @(posedge clk or reset) begin
         if (reset) begin
             for (i = 0; i < 31; i = i + 1)
                 registers[i] <= 64'b0;
-            registers[31] <= 64'h10000;
+            registers[31] <= 64'h80000;
         end else if (we) begin
             registers[rd] <= data_in;
         end
