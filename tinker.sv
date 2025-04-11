@@ -451,7 +451,7 @@ module tinker_core(
     // halt bs
     always @(*) begin
         if (instruction[31:27] == h0xf) begin
-            hlt = 1
+            hlt = 1;
         end else begin
             hlt = 0;
         end
