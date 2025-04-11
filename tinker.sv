@@ -266,15 +266,18 @@ endmodule
 //  - PC <= 0x2000
 //  - r31 <= 0x10000
 module tinker_core (
-    input  clk,
-    input  reset,
-    output logic hlt  // <--- ADDED: output halt signal
+    input clk,
+    input reset,
+    output logic hlt    // Halt output: becomes 1 once halt is executed.
 );
-    //=================== FETCH ===================
+    //=====================================================================
+    // WIRE DECLARATIONS & INSTANCES (FETCH, MEMORY, REG_FILE, etc.)
+    // These are exactly as in your “mostly working” code.
+    //=====================================================================
+    // --- FETCH ---
     wire [63:0] pc;
     wire branch;
     wire [63:0] branch_pc;
-
     fetch fetch_inst (
         .clk(clk),
         .reset(reset),
@@ -283,16 +286,15 @@ module tinker_core (
         .pc(pc)
     );
 
-    //=================== MEMORY ==================
+    // --- MEMORY ---
     wire [31:0] instr_out;
     wire [63:0] mem_data_out;
     reg  [63:0] mem_addr;
-    wire mem_read_instr = 1'b1;  // Always fetching instructions
-    wire mem_read_data;
+    wire mem_read_instr = 1'b1;  // Always fetch instruction
+    wire mem_read_data;          // as driven by control
     wire mem_write;
     reg  [63:0] mem_write_data;
-
-    // Instance name must be exactly "memory" for testbench access
+    // Instance name must be "memory"
     memory memory (
         .addr(mem_addr),
         .mem_read_instr(mem_read_instr),
@@ -303,7 +305,7 @@ module tinker_core (
         .data_out(mem_data_out)
     );
 
-    //=================== DECODER =================
+    // --- INSTRUCTION DECODER ---
     wire [4:0] opcode, rd, rs, rt;
     wire [11:0] L;
     instruction_decoder decoder_inst (
@@ -315,13 +317,12 @@ module tinker_core (
         .L(L)
     );
 
-    //=================== REGISTER FILE ===========
+    // --- REGISTER FILE ---
     wire [63:0] rdVal, rsVal, rtVal;
     reg  [63:0] write_data;
     reg  [4:0]  write_reg;
     reg         write_enable;
-
-    // "reg_file" is required name for testbench
+    // Instance name must be "reg_file"
     reg_file reg_file (
         .clk(clk),
         .data_in(write_data),
@@ -335,7 +336,7 @@ module tinker_core (
         .rtOut(rtVal)
     );
 
-    //=================== ALU / FPU ===============
+    // --- ALU & FPU ---
     wire [63:0] alu_result;
     alu alu_inst (
         .opcode(opcode),
@@ -353,7 +354,7 @@ module tinker_core (
         .fpuResult(fpu_result)
     );
 
-    //=================== CONTROL =================
+    // --- CONTROL ---
     wire mem_read, mem_write_en, reg_write_en;
     control control_inst (
         .opcode(opcode),
@@ -368,68 +369,98 @@ module tinker_core (
         .reg_write(reg_write_en)
     );
 
-    //=================== MUX for Write-Back ======
+    // --- MUX for Write-back ---
     reg [63:0] mux_result;
     always @(*) begin
-        // If floating opcode (101xx) => fpu_result
-        if (opcode[4:1] == 4'b1010 || opcode[4:1] == 4'b1011) begin
+        // If the opcode corresponds to floating point operations (101xx) -> use FPU result;
+        // Otherwise, if mem_read active then use data loaded from memory;
+        // Else use ALU result.
+        if ((opcode[4:1] == 4'b1010) || (opcode[4:1] == 4'b1011))
             mux_result = fpu_result;
-        end
-        // If mem_read => loaded data
-        else if (mem_read) begin
+        else if (mem_read)
             mux_result = mem_data_out;
-        end
-        // Otherwise => ALU result
-        else begin
+        else
             mux_result = alu_result;
-        end
     end
 
-    //=================== HALT LOGIC ==============
-    // We'll keep track if we've seen an opcode == 0x0f 
-    // (bits 31:27 = 01111) and set hlt=1 forever once encountered.
-    // Also on reset, we set r0-30=0, r31=0x80000
-    reg hlt_reg;
-    assign hlt = hlt_reg;
+    //=====================================================================
+    // NEW HALT LOGIC IMPLEMENTATION
+    // We introduce a one-cycle delay: 
+    // When a halt instruction (opcode == 5'h0f) is detected, we set a
+    // "halt_pending" flag. On the next positive clock, if halt_pending is set,
+    // we then assert hlt and keep it asserted.
+    //=====================================================================
+    reg halt_pending;  // Flag indicating we have seen a halt instruction.
+    reg hlt_reg;       // Internal register for the halt signal.
+    assign hlt = hlt_reg;  // Drive the module output.
 
-    integer i;
+    integer i;  // used for register initialization below
+
+    //=====================================================================
+    // MAIN SYNCHRONOUS BLOCK
+    // This block handles:
+    //   - Register file initialization on reset
+    //   - Memory address selection
+    //   - Reg_file write signals
+    //   - Halt logic (delayed one cycle after halt instruction is seen)
+    //=====================================================================
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            // 1) Clear r0-30, set r31=0x80000
-            for (i=0; i<31; i=i+1) begin
+            // Initialize reg_file registers:
+            for (i = 0; i < 31; i = i + 1) begin
                 reg_file.registers[i] <= 64'b0;
             end
-            reg_file.registers[31] <= 64'h80000;
+            reg_file.registers[31] <= 64'h80000;  // r31 = 0x80000
 
-            // 2) Deassert halt
-            hlt_reg <= 1'b0;
-        end
-        else begin
-            // 3) Address generation for load/store
-            mem_addr <= pc; // default for instruction fetch
+            // Clear halt flags on reset.
+            halt_pending <= 1'b0;
+            hlt_reg      <= 1'b0;
+        end else begin
+            // ----------------------------
+            // Memory Address Selection:
+            // Default: fetch instruction at PC; if load/store is active, use alu_result.
+            // ----------------------------
+            mem_addr <= pc;  
             if (mem_read || mem_write_en) begin
                 mem_addr <= alu_result;
             end
-            // For store, we write from rsVal
+
+            // ----------------------------
+            // Memory Write Data:
+            // For store operations, typically use the data from rsVal.
+            // ----------------------------
             mem_write_data <= rsVal;
 
-            // Register file write signals
+            // ----------------------------
+            // Register File Write Signals:
+            // Write result from the mux into register file destination rd.
+            // ----------------------------
             write_data   <= mux_result;
             write_reg    <= rd;
             write_enable <= reg_write_en && (rd != 5'd0);
 
-            // Memory write signal
-            // "mem_write" assigned below as a wire
-            // see: assign mem_write = mem_write_en;
-
-            // 4) If opcode=0x0f => halt
-            if (opcode == 5'h0f) begin
+            // ----------------------------
+            // Halt Logic:
+            // If a halt instruction is detected AND we are not already waiting, then
+            // set halt_pending (but do not set hlt immediately).
+            // On the next cycle, if halt_pending is set, then set hlt_reg to 1.
+            // This ensures that the halt instruction fully propagates (e.g., write-back) 
+            // before the processor stops.
+            // ----------------------------
+            if (!halt_pending && (opcode == 5'h0f)) begin
+                halt_pending <= 1'b1;
+            end else if (halt_pending) begin
+                // One cycle after the halt instruction is seen, assert halt.
                 hlt_reg <= 1'b1;
+                halt_pending <= 1'b0;  // Optionally, you can keep this set if desired.
             end
         end
     end
 
-    // Wire assignment for memory write
+    //=====================================================================
+    // MEMORY WRITE SIGNAL ASSIGNMENT (pass control signal directly)
+    //=====================================================================
     assign mem_write = mem_write_en;
 endmodule
+
 
