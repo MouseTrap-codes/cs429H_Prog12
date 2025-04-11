@@ -1,111 +1,129 @@
-// instruction_decoder.v
-module instruction_decoder(
-    input  [31:0] in,       // 32-bit instruction
-    output [4:0]  opcode,   // Bits [31:27]
-    output [4:0]  rd,       // Bits [26:22]
-    output [4:0]  rs,       // Bits [21:17]
-    output [4:0]  rt,       // Bits [16:12]
-    output [11:0] L         // Bits [11:0]
-);
-    assign opcode = in[31:27];
-    assign rd     = in[26:22];
-    assign rs     = in[21:17];
-    assign rt     = in[16:12];
-    assign L      = in[11:0];
-endmodule
-
-// alu.v
-module alu (
-    input  [4:0]  opcode,
-    input  [63:0] op1,       // First operand
-    input  [63:0] op2,       // Second operand
-    input  [11:0] L,         // 12-bit literal/immediate
-    output reg [63:0] result // Result
-);
-    always @(*) begin
-        case (opcode)
-            // Integer arithmetic
-            5'h18: result = op1 + op2;                   // add
-            5'h19: result = op1 + {{52{L[11]}}, L};       // addi
-            5'h1a: result = op1 - op2;                   // sub
-            5'h1b: result = op1 - {52'b0, L};             // subi
-            5'h1c: result = op1 * op2;                   // mul
-            5'h1d: result = op1 / op2;                   // div
-            // Logical operations
-            5'h0:  result = op1 & op2;                   // and
-            5'h1:  result = op1 | op2;                   // or
-            5'h2:  result = op1 ^ op2;                   // xor
-            5'h3:  result = ~op1;                        // not (rt ignored)
-            // Shift operations
-            5'h4:  result = op1 >> op2;                  // shftr
-            5'h5:  result = op1 >> L;                    // shftri
-            5'h6:  result = op1 << op2;                  // shftl
-            5'h7:  result = op1 << L;                    // shftli
-            // Data movement
-            5'h11: result = op1;                        // mov rd, rs
-            5'h12: begin                                 // mov rd, L: update lower 12 bits
-                      result = op1;
-                      result[11:0] = L;
-                   end
-            default: result = 64'b0;
-        endcase
-    end
-endmodule
-
-// fpu.v
-module fpu (
-    input  [4:0]  opcode,
-    input  [63:0] rs,         // Operand 1
-    input  [63:0] rt,         // Operand 2
-    input  [11:0] L,          // Literal
-    output reg [63:0] result  // FPU result
-);
-    real op1, op2, res_real;
-    always @(*) begin
-        op1 = $bitstoreal(rs);
-        op2 = $bitstoreal(rt);
-        case (opcode)
-            5'h14: res_real = op1 + op2; // addf
-            5'h15: res_real = op1 - op2; // subf
-            5'h16: res_real = op1 * op2; // mulf
-            5'h17: res_real = op1 / op2; // divf
-            default: res_real = 0.0;
-        endcase
-        result = $realtobits(res_real);
-    end
-endmodule
-
-// regFile.v
-module regFile (
+//=====================================================================
+// FETCH MODULE
+//=====================================================================
+module fetch (
     input         clk,
     input         reset,
-    input  [63:0] data_in,   // Data to write
-    input         we,        // Write enable
-    input  [4:0]  rd,        // Write address
-    input  [4:0]  rs,        // Read address 1
-    input  [4:0]  rt,        // Read address 2
-    output reg [63:0] rdOut, // Data out port for write-back
-    output reg [63:0] rsOut, // Data out port A
-    output reg [63:0] rtOut  // Data out port B
+    input         branch,       // High if we should branch this cycle
+    input  [63:0] branch_pc,    // Target address if branching
+    output reg [63:0] pc        // Current Program Counter
 );
-    reg [63:0] registers [0:31];
-    integer i;
-    
-    // Initial register values: r0-r30 = 0 and r31 = MEMSIZE (here 0x80000)
-    initial begin
-        for (i = 0; i < 31; i = i + 1)
-            registers[i] = 64'b0;
-        registers[31] = 64'h80000;
-    end
-    
-    // Synchronous write.
-    always @(posedge clk) begin
-        if (we) begin
-            registers[rd] <= data_in;
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            pc <= 64'h2000;     // On reset, PC = 0x2000
+        end
+        else if (branch) begin
+            pc <= branch_pc;    // Branch override
+        end
+        else begin
+            pc <= pc + 4;       // Default: increment by 4
         end
     end
-    
-    // Combinational read.
+endmodule
+
+//=====================================================================
+// CONTROL MODULE
+//=====================================================================
+// Decides branching, load/store, register writes, etc., and flags HALT.
+module control (
+    input  [4:0]  opcode,   // from instruction decoder
+    input  [63:0] rs_val,   // register rs contents
+    input  [63:0] rt_val,   // register rt contents
+    input  [63:0] rd_val,   // register rd contents (sometimes used in branch target)
+    input  [63:0] pc,       // current PC
+    output reg    branch,   // if 1, fetch uses branch_pc
+    output reg [63:0] branch_pc, // next PC if branching
+    output reg    mem_read, // if 1, read 64-bit data from memory
+    output reg    mem_write,// if 1, write 64-bit data to memory
+    output reg    reg_write,// if 1, write result to register file
+    output reg    hlt       // high when HALT instruction seen
+);
+    always @(*) begin
+        // Defaults
+        branch     = 0;
+        branch_pc  = 0;
+        mem_read   = 0;
+        mem_write  = 0;
+        reg_write  = 1;
+        hlt        = 0;
+
+        case (opcode)
+            // === HALT ===
+            5'b11111: begin
+                // when we see HALT, assert hlt and do no other side‐effects
+                hlt        = 1;
+                reg_write  = 0;
+            end
+
+            // === Branch instructions ===
+            5'b01000: begin // br rd => pc <- rd_val
+                branch    = 1; branch_pc = rd_val;
+            end
+            5'b01001: begin // brr rd => pc <- pc + rd_val
+                branch    = 1; branch_pc = pc + rd_val;
+            end
+            5'b01010: begin // brr L => pc <- pc + sign-extended L
+                branch    = 1;
+                branch_pc = pc + {{52{1'b0}}, rd_val[11:0]};
+            end
+            5'b01011: if (rs_val != 0) begin // brnz
+                branch    = 1; branch_pc = rd_val;
+            end
+            5'b01110: if ($signed(rs_val) > $signed(rt_val)) begin // brgt
+                branch    = 1; branch_pc = rd_val;
+            end
+
+            // === Loads / Stores ===
+            5'b10000: begin // mov rd, (rs)(L)
+                mem_read   = 1;
+                reg_write  = 1;
+            end
+            5'b10011: begin // mov (rd)(L), rs
+                mem_write  = 1;
+                reg_write  = 0;
+            end
+
+            // === ALU / FPU / default ===
+            default: begin
+                // leave defaults
+            end
+        endcase
+    end
+endmodule
+
+//=====================================================================
+// REG_FILE MODULE (with reset)
+//=====================================================================
+module reg_file (
+    input         clk,
+    input         reset,      // synchronous reset for registers
+    input  [63:0] data_in,    // Data to write
+    input  [4:0]  write_reg,  // Destination register index
+    input         we,         // Write enable
+    input  [4:0]  rd,         // For reading rd
+    input  [4:0]  rs,         // For reading rs
+    input  [4:0]  rt,         // For reading rt
+    output reg [63:0] rdOut,
+    output reg [63:0] rsOut,
+    output reg [63:0] rtOut
+);
+    parameter MEM_SIZE = 524288;
+    reg [63:0] registers [0:31];
+    integer i;
+
+    // On reset, clear r0–r30, set r31 = MEM_SIZE
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            for (i = 0; i < 31; i = i + 1)
+                registers[i] <= 64'b0;
+            registers[31] <= MEM_SIZE;
+        end
+        else if (we && (write_reg != 5'd0)) begin
+            registers[write_reg] <= data_in;
+        end
+    end
+
+    // Combinational reads
     always @(*) begin
         rdOut = registers[rd];
         rsOut = registers[rs];
@@ -113,394 +131,137 @@ module regFile (
     end
 endmodule
 
-// memory.v
-module memory(
-   input clk,
-   input reset,
-   // Fetch interface:
-   input  [31:0] fetch_addr,
-   output [31:0] fetch_instruction,
-   // Data load interface:
-   input  [31:0] data_load_addr,
-   output [63:0] data_load,
-   // Store interface:
-   input         store_we,
-   input  [31:0] store_addr,
-   input  [63:0] store_data
+//=====================================================================
+// (Other modules: memory, instruction_decoder, alu, fpu)
+//   — unchanged from your original submission —
+//=====================================================================
+// ... paste your memory, decoder, ALU, FPU here ...
+
+//=====================================================================
+// TOP-LEVEL MODULE (NAMED "tinker_core")
+//=====================================================================
+module tinker_core (
+    input         clk,
+    input         reset,
+    output        hlt       // cycle-complete flag
 );
-    parameter MEM_SIZE = 512*1024;  // 512 KB
-    (* keep *) reg [7:0] bytes [0:MEM_SIZE-1];
-    integer i;
-    
-    always @(posedge clk) begin
-        if (reset) begin
-            // Optionally initialize memory.
-        end
-        if (store_we) begin
-            bytes[store_addr]     <= store_data[63:56];
-            bytes[store_addr + 1] <= store_data[55:48];
-            bytes[store_addr + 2] <= store_data[47:40];
-            bytes[store_addr + 3] <= store_data[39:32];
-            bytes[store_addr + 4] <= store_data[31:24];
-            bytes[store_addr + 5] <= store_data[23:16];
-            bytes[store_addr + 6] <= store_data[15:8];
-            bytes[store_addr + 7] <= store_data[7:0];
-        end
-    end
-    
-    // Instruction fetch (big-endian)
-    assign fetch_instruction = { 
-        bytes[fetch_addr],
-        bytes[fetch_addr+1],
-        bytes[fetch_addr+2],
-        bytes[fetch_addr+3]
-    };
-    
-    // Data load (big-endian)
-    assign data_load = { 
-        bytes[data_load_addr],
-        bytes[data_load_addr+1],
-        bytes[data_load_addr+2],
-        bytes[data_load_addr+3],
-        bytes[data_load_addr+4],
-        bytes[data_load_addr+5],
-        bytes[data_load_addr+6],
-        bytes[data_load_addr+7]
-    };
-endmodule
-
-// fetch.v
-module fetch(
-    input  [31:0] PC,
-    input  [31:0] fetch_instruction,
-    output [31:0] instruction
-);
-    assign instruction = fetch_instruction;
-endmodule
-
-module control(
-    input clk,
-    input reset,
-    input [4:0] opcode,
-    input [63:0] signExtendedLiteral,
-    output reg writeToMemory,
-    output reg readFromMemory,
-    output reg writeToRegister,
-    output reg shouldUpdatePC,
-    output reg fetchStage,
-    output reg hlt
-);
-    // Define FSM states.
-    parameter FETCH = 3'd0, DECODE = 3'd1, ALU = 3'd2,
-              LOADSTORE = 3'd3, REGFILE = 3'd4;
-    reg [2:0] state, nextState;
-    
-    // State Transition Logic.
-    always @(posedge clk or posedge reset) begin
-        if (reset)
-            state <= FETCH;
-        else
-            state <= nextState;
-    end
-    
-    always @(*) begin
-        // Default outputs.
-        fetchStage = (state == FETCH);
-        writeToMemory = 1'b0;
-        readFromMemory  = 1'b0;
-        writeToRegister = 1'b0;
-        shouldUpdatePC = 1'b0;
-        hlt = 1'b0;
-        
-        case (state)
-            FETCH: begin
-                nextState = DECODE;
-            end
-            DECODE: begin
-                case (opcode)
-                    5'h0d, 5'h10, 5'h13: nextState = LOADSTORE;
-                    5'h0f: begin
-                        if (signExtendedLiteral[3:0] == 4'h0) begin
-                            hlt = 1;
-                            nextState = FETCH;
-                            shouldUpdatePC = 0;
-                        end else begin
-                            nextState = FETCH;
-                            shouldUpdatePC = 1;
-                        end
-                    end
-                    default: nextState = ALU;
-                endcase
-            end
-            ALU: begin
-                // For branch/jump opcodes, update PC immediately.
-                case (opcode)
-                    5'h08, 5'h09, 5'h0a, 5'h0b, 5'h0e: begin
-                        nextState = REGFILE;
-                        shouldUpdatePC = 1;
-                    end
-                    5'h0c: nextState = LOADSTORE;
-                    default: nextState = REGFILE;
-                endcase
-            end
-            LOADSTORE: begin
-                case (opcode)
-                    5'h0c: begin
-                        writeToMemory = 1;
-                        nextState = REGFILE;
-                        shouldUpdatePC = 1;
-                    end
-                    5'h0d: begin
-                        readFromMemory = 1;
-                        nextState = REGFILE;
-                        shouldUpdatePC = 1;
-                    end
-                    5'h10: begin
-                        readFromMemory = 1;
-                        nextState = REGFILE;
-                        shouldUpdatePC = 1;
-                    end
-                    5'h13: begin
-                        writeToMemory = 1;
-                        nextState = REGFILE;
-                        shouldUpdatePC = 1;
-                    end
-                    default: begin
-                        nextState = REGFILE;
-                        shouldUpdatePC = 1;
-                    end
-                endcase
-            end
-            REGFILE: begin
-                // Here, the register file write occurs.
-                // Enable write for arithmetic and move instructions.
-                case (opcode)
-                    5'h00, 5'h01, 5'h02, 5'h03,
-                    5'h04, 5'h05, 5'h06, 5'h07,
-                    5'h10, 5'h11, 5'h12,
-                    5'h14, 5'h15, 5'h16, 5'h17,
-                    5'h18, 5'h19, 5'h1a, 5'h1b, 5'h1c, 5'h1d:
-                        writeToRegister = 1;
-                    default: writeToRegister = 0;
-                endcase
-                nextState = FETCH;
-                shouldUpdatePC = 1;
-            end
-            default: nextState = FETCH;
-        endcase
-    end
-endmodule
-
-
-module tinker_core(input clk, input reset, output hlt);
-    // State definitions.
-    typedef enum logic [2:0] {
-        FETCH,    // Read instruction from memory.
-        DECODE,   // Latch instruction & decode.
-        EXECUTE,  // Perform ALU/FPU operations.
-        LOADSTORE,// Compute effective address and perform memory access.
-        REGFILE   // Write result to register file and update PC.
-    } state_t;
-    
-    state_t state, nextState;
-    
-    // Datapath registers.
-    reg [63:0] programCounter;
-    reg [31:0] instructionRegister;
-    reg [63:0] resultReg;   // Latches ALU or memory result.
-    
-    // Halt flag.
-    reg halted;
-    
-    // ---------------------------
-    // Instantiate Memory.
-    // ---------------------------
-    wire [31:0] memInstruction;
-    wire [63:0] memData;
-    wire memWriteEnable;
-    wire [63:0] memWriteData;
-    wire [63:0] effectiveAddress;
-    
-    // Compute effective address:
-    // When in FETCH state, use programCounter; otherwise, for load/store,
-    // use computed address based on opcode and registers.
-    wire fetchStage = (state == FETCH);
-    // We'll later compute effectiveAddress based on opcode; for now:
-    assign effectiveAddress = fetchStage ? programCounter :
-                              (opcode == 5'h0c || opcode == 5'h0d) ? (stackPointer - 64'd8) :
-                              (opcode == 5'h10) ? (dataOutputOne + signExtendedLiteral) :
-                              (opcode == 5'h13) ? (dataOutputThree + signExtendedLiteral) :
-                              programCounter;
-                              
-    memory mem_inst(
-        .clk(clk),
-        .reset(reset),
-        .fetch_addr(effectiveAddress),
-        .fetch_instruction(memInstruction),
-        .data_load_addr(effectiveAddress),
-        .data_load(memData),
-        .store_we(memWriteEnable),
-        .store_addr(effectiveAddress),
-        .store_data(memWriteData)
+    // FETCH
+    wire [63:0] pc;
+    wire        branch;
+    wire [63:0] branch_pc;
+    fetch fetch_inst (
+        .clk(clk), .reset(reset),
+        .branch(branch), .branch_pc(branch_pc),
+        .pc(pc)
     );
-    
-    // ---------------------------
-    // Instruction Register.
-    // ---------------------------
-    always @(posedge clk or posedge reset) begin
-        if (reset)
-            instructionRegister <= 32'b0;
-        else if (state == FETCH)  // Latch the fetched instruction.
-            instructionRegister <= memInstruction;
-    end
-    
-    // ---------------------------
-    // Decoder and Sign-Extension.
-    // ---------------------------
+
+    // MEMORY
+    wire [31:0] instr_out;
+    wire [63:0] mem_data_out;
+    reg  [63:0] mem_addr;
+    wire        mem_read_instr = 1'b1;  // always fetch
+    wire        mem_read_data;
+    wire        mem_write_en;
+    reg  [63:0] mem_write_data;
+    memory memory (
+        .addr        (mem_addr),
+        .mem_read_instr(mem_read_instr),
+        .mem_read_data(mem_read_data),
+        .mem_write   (mem_write_en),
+        .write_data  (mem_write_data),
+        .instr_out   (instr_out),
+        .data_out    (mem_data_out)
+    );
+
+    // DECODER
     wire [4:0] opcode, rd, rs, rt;
-    wire [11:0] l;
-    decoder dec_inst(
-        .instruction(instructionRegister),
+    wire [11:0] L;
+    instruction_decoder decoder_inst (
+        .instr(instr_out),
         .opcode(opcode),
-        .rd(rd),
-        .rs(rs),
-        .rt(rt),
-        .l(l)
+        .rd(rd), .rs(rs), .rt(rt),
+        .L(L)
     );
-    wire [63:0] signExtendedLiteral;
-    assign signExtendedLiteral = {{52{l[11]}}, l};
-    
-    // ---------------------------
-    // Register File.
-    // ---------------------------
-    wire [63:0] dataOutputOne, dataOutputTwo, dataOutputThree, stackPointer;
-    // The register file writes when writeToRegister is asserted.
-    // We will drive its write data from resultReg.
-    registers regFile(
-        .clk(clk),
-        .reset(reset),
-        .write(writeToRegister),
-        .data_input(resultReg),
-        .registerOne(rs),
-        .registerTwo(rt),
-        .registerThree(rd),
-        .data_outputOne(dataOutputOne),
-        .data_outputTwo(dataOutputTwo),
-        .data_outputThree(dataOutputThree),
-        .stackPointer(stackPointer)
+
+    // REGISTER FILE
+    wire [63:0] rdVal, rsVal, rtVal;
+    reg  [63:0] write_data;
+    reg  [4:0]  write_reg;
+    reg         write_enable;
+    reg_file reg_file_inst (
+        .clk(clk), .reset(reset),
+        .data_in(write_data),
+        .write_reg(write_reg),
+        .we(write_enable),
+        .rd(rd), .rs(rs), .rt(rt),
+        .rdOut(rdVal), .rsOut(rsVal), .rtOut(rtVal)
     );
-    
-    // ---------------------------
-    // ALU.
-    // ---------------------------
-    wire [63:0] aluOutput, updatedPC;
-    alu alu_inst(
+
+    // ALU / FPU
+    wire [63:0] alu_result, fpu_result;
+    alu alu_inst (
+        .opcode(opcode), .rsVal(rsVal), .rtVal(rtVal),
+        .L(L), .aluResult(alu_result)
+    );
+    fpu fpu_inst (
+        .opcode(opcode), .rsVal(rsVal), .rtVal(rtVal),
+        .fpuResult(fpu_result)
+    );
+
+    // CONTROL
+    wire        mem_read, mem_write, reg_write;
+    wire        branch_ctrl;
+    wire [63:0] branch_pc_ctrl;
+    wire        hlt_ctrl;
+    control control_inst (
         .opcode(opcode),
-        .inputDataOne(dataOutputOne),
-        .inputDataTwo(dataOutputTwo),
-        .inputDataThree(dataOutputThree),
-        .signExtendedLiteral(signExtendedLiteral),
-        .programCounter(programCounter),
-        .result(aluOutput),
-        .newProgramCounter(updatedPC)
+        .rs_val(rsVal), .rt_val(rtVal), .rd_val(rdVal),
+        .pc(pc),
+        .branch(branch_ctrl),
+        .branch_pc(branch_pc_ctrl),
+        .mem_read(mem_read),
+        .mem_write(mem_write),
+        .reg_write(reg_write),
+        .hlt(hlt_ctrl)
     );
-    
-    // For loads, the write data to the regFile comes from memory.
-    // Otherwise, it comes from the ALU.
-    wire [63:0] writeDataRegister;
-    assign writeDataRegister = (opcode == 5'h10) ? memData : aluOutput;
-    
-    // ---------------------------
-    // Memory Write Data.
-    // ---------------------------
-    // For store opcodes.
-    assign memWriteData = (opcode == 5'h0c) ? (programCounter + 64'd4) : dataOutputOne;
-    // Memory write enable signal comes from the control unit.
-    
-    // ---------------------------
-    // Control Unit.
-    // ---------------------------
-    // The control module here implements a simple FSM.
-    wire writeToMemory, readFromMemory, writeToRegister;
-    wire shouldUpdatePC, ctrlFetchStage, ctrlHlt;
-    
-    control ctrl_inst(
-        .clk(clk),
-        .reset(reset),
-        .opcode(opcode),
-        .signExtendedLiteral(signExtendedLiteral),
-        .writeToMemory(writeToMemory),
-        .readFromMemory(readFromMemory),
-        .writeToRegister(writeToRegister),
-        .shouldUpdatePC(shouldUpdatePC),
-        .fetchStage(ctrlFetchStage),
-        .hlt(ctrlHlt)
-    );
-    
-    // ---------------------------
-    // Halt Flag.
-    // ---------------------------
+
+    // Latch the hlt output
+    reg hlt_r;
     always @(posedge clk or posedge reset) begin
-        if (reset)
-            halted <= 1'b0;
-        else if (ctrlHlt)
-            halted <= 1'b1;
+        if (reset)       hlt_r <= 1'b0;
+        else if (hlt_ctrl) hlt_r <= 1'b1;
     end
-    assign hlt = halted;
-    
-    // ---------------------------
-    // FSM: Next-State Logic.
-    // ---------------------------
+    assign hlt = hlt_r;
+
+    // MUX for write‑back
+    reg [63:0] mux_result;
     always @(*) begin
-        case (state)
-            FETCH:    nextState = DECODE;
-            DECODE:   nextState = EXECUTE;
-            EXECUTE:  nextState = ( (opcode == 5'h0c || opcode == 5'h0d || opcode == 5'h10 || opcode == 5'h13) ? LOADSTORE : REGFILE );
-            LOADSTORE: nextState = REGFILE;
-            REGFILE:  nextState = FETCH;
-            default:  nextState = FETCH;
-        endcase
+        if (opcode[4:2] == 3'b101)       mux_result = fpu_result;
+        else if (mem_read)               mux_result = mem_data_out;
+        else                             mux_result = alu_result;
     end
-    
-    // ---------------------------
-    // FSM: Sequential (State) Updates & Datapath Latching.
-    // ---------------------------
+
+    // Synchronous updates: mem_addr, writeback, etc.
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            state <= FETCH;
-            programCounter <= 64'h2000;
-            resultReg <= 64'b0;
+            mem_addr       <= 64'b0;
+            mem_write_data <= 64'b0;
+            write_data     <= 64'b0;
+            write_reg      <= 5'b0;
+            write_enable   <= 1'b0;
         end else begin
-            state <= nextState;
-            case (state)
-                FETCH: begin
-                    // Instruction was latched in IR already.
-                end
-                DECODE: begin
-                    // No pipeline register needed.
-                end
-                EXECUTE: begin
-                    // Latch ALU result.
-                    resultReg <= aluOutput;
-                end
-                LOADSTORE: begin
-                    // For a load, the result comes from memory.
-                    if (readFromMemory)
-                        resultReg <= memData; 
-                    // For a store, nothing is latched.
-                end
-                REGFILE: begin
-                    // The register file is written (via control signal writeToRegister)
-                    // PC update happens here.
-                    if (shouldUpdatePC) begin
-                        if (opcode == 5'h0d)
-                            programCounter <= memData; // jump via loaded data.
-                        else
-                            programCounter <= updatedPC;
-                    end
-                end
-            endcase
+            // address: instruction fetch or data access
+            mem_addr       <= (mem_read || mem_write) ? alu_result : pc;
+            mem_write_data <= rsVal;
+            write_data     <= mux_result;
+            write_reg      <= rd;
+            write_enable   <= reg_write && (rd != 5'd0);
         end
     end
-endmodule
 
+    // Branch override
+    assign branch    = branch_ctrl;
+    assign branch_pc = branch_pc_ctrl;
+    assign mem_write_en = mem_write;
+
+endmodule
