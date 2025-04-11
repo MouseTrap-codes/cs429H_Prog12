@@ -180,202 +180,130 @@ module fetch(
 endmodule
 
 
-// control module
+// control.sv
 module control(
     input      [2:0] current_state,  // Global FSM state
     input            clk,
     input            reset,
-    input  [31:0]   instruction,
-    input  [31:0]   PC,
-    input  [63:0]   opA,         // Data from register file (rs)
-    input  [63:0]   opB,         // Data from register file (rt)
-    input  [63:0]   data_load,   // Data loaded from memory 
+    input  [31:0]    instruction,
+    input  [31:0]    PC,
+    input  [63:0]    opA,         // Data from register file (rs)
+    input  [63:0]    opB,         // Data from register file (rt)
+    input  [63:0]    data_load,   // Data loaded from memory 
     output reg [31:0] next_PC,
     output reg [63:0] exec_result,
     output reg        write_en,
     output reg [4:0]  write_reg,
-    // register file read addresses:
     output reg [4:0]  rf_addrA,
     output reg [4:0]  rf_addrB,
-    // memory store signals:
     output reg        mem_we,
     output reg [31:0] mem_addr,
     output reg [63:0] mem_write_data,
-    // data load address for load instructions:
     output reg [31:0] data_load_addr
 );
-    // Decode the instruction:
+    // decode
     wire [4:0] opcode, rd, rs, rt;
     wire [11:0] L;
     instruction_decoder dec (
        .in(instruction),
        .opcode(opcode),
-       .rd(rd),
-       .rs(rs),
-       .rt(rt),
-       .L(L)
+       .rd(rd), .rs(rs), .rt(rt), .L(L)
     );
 
-    // Instantiate ALU and FPU (combinational)
-    wire [63:0] alu_out;
-    alu alu_inst (
-       .opcode(opcode),
-       .op1(opA),
-       .op2(opB),
-       .L(L),
-       .result(alu_out)
-    );
-    
-    wire [63:0] fpu_out;
-    fpu fpu_inst (
-       .opcode(opcode),
-       .rs(opA),
-       .rt(opB),
-       .L(L),
-       .result(fpu_out)
-    );
-    
-    // Default assignment for register file read addresses:
+    // ALU / FPU outputs
+    wire [63:0] alu_out, fpu_out;
+    alu  alu_inst (.opcode(opcode), .op1(opA), .op2(opB), .L(L), .result(alu_out));
+    fpu  fpu_inst (.opcode(opcode), .rs(opA), .rt(opB), .L(L), .result(fpu_out));
+
+    // register‐file read addresses (unchanged)
     always @(*) begin
-         rf_addrA = rs;
-         rf_addrB = rt;
-         // Override for specific opcodes:
-         case (opcode)
-            // Immediate instructions: op1 should come from rd.
-            5'h19, 5'h1b, 5'h5, 5'h7, 5'h12:
-                rf_addrA = rd;
-            // Branch-not-zero: branch target comes from rd.
-            5'hb:
-                rf_addrB = rd;
-            // Branch instructions that jump to a register address.
-            5'h8, 5'h9:
-                rf_addrA = rd;
-            // Call: use rd for jump target and force second port to r31.
-            5'hc: begin
-                rf_addrA = rd;
-                rf_addrB = 5'd31;
-            end
-            // Return: force first port to r31.
-            5'hd:
-                rf_addrA = 5'd31;
-            // brgt: branch target from rd.
-            5'he:
-                rf_addrB = rd;
-            // Store (mov (rd)(L), rs): use rd as base and rs as value.
-            5'h13: begin
-                rf_addrA = rd;
-                rf_addrB = rs;
-            end
-            default: ; // use defaults
-         endcase
+        rf_addrA = rs; rf_addrB = rt;
+        case(opcode)
+            5'h19,5'h1b,5'h5,5'h7,5'h12: rf_addrA = rd;
+            5'hb:                      rf_addrB = rd;
+            5'h8,5'h9:                 rf_addrA = rd;
+            5'hc: begin rf_addrA = rd; rf_addrB = 5'd31; end
+            5'hd:                      rf_addrA = 5'd31;
+            5'he:                      rf_addrB = rd;
+            5'h13: begin rf_addrA = rd; rf_addrB = rs; end
+            default: ;
+        endcase
     end
-    
-    // Main control logic (combinational) – outputs only change in the proper FSM cycle.
-    // You can further gate these based on current_state if needed.
+
+    // main control
     always @(*) begin
-         // Default assignments:
-         next_PC         = PC + 4;
-         exec_result     = 64'b0;
-         write_en        = 1'b0;
-         write_reg       = rd;
-         mem_we          = 1'b0;
-         mem_addr        = 32'b0;
-         mem_write_data  = 64'b0;
-         data_load_addr  = 32'b0;
-         
-         // Only drive control signals in the proper cycles. For example:
-         // Assume the following:
-         // DECODE: no actions yet,
-         // EXECUTE: ALU/FPU operations,
-         // MEMORY: memory load/store,
-         // WRITEBACK: write results back to the register file.
-         case (current_state)
-           3'd0: begin
-               // FETCH: nothing to do here
-           end
-           3'd1: begin
-               // DECODE: prepare control signals if needed
-           end
-           3'd2: begin // EXECUTE: perform ALU/FPU operations
-               case (opcode)
-                  // Integer Arithmetic & Logical Instructions:
-                  5'h18, 5'h1a, 5'h1c, 5'h1d,
-                  5'h0, 5'h1, 5'h2, 5'h3, 5'h4, 5'h6,
-                  5'h19, 5'h1b, 5'h5, 5'h7, 5'h12: begin
-                      exec_result = alu_out;
-                      write_en    = 1'b1;
-                  end
-                  // Floating Point Instructions:
-                  5'h14, 5'h15, 5'h16, 5'h17: begin
-                      exec_result = fpu_out;
-                      write_en    = 1'b1;
-                  end
-                  default: begin
-                      exec_result = 64'b0;
-                  end
-               endcase
-           end
-           3'd3: begin // MEMORY: memory operations and branch calculations
-               case (opcode)
-                  // Branch instructions:
-                  5'h8: begin // br rd: PC = register[rd]
-                      next_PC = opA; // opA = register rd
-                  end
-                  5'h9: begin // brr rd: PC = PC + register[rd]
-                      next_PC = PC + opA[31:0];
-                  end
-                  5'ha: begin // brr L: PC = PC + sign-extended L
-                      next_PC = PC + {{20{L[11]}}, L};
-                  end
-                  5'hb: begin // brnz rd, rs: if (register[rs] != 0) then PC = register[rd]
-                      if (opA != 0)
-                          next_PC = opB;
-                      else
-                          next_PC = PC + 4;
-                  end
-                  5'hc: begin // call rd, rs, rt:
-                      mem_we         = 1'b1;
-                      mem_addr       = opB - 8;  // opB = register 31
-                      mem_write_data = PC + 4;
-                      next_PC        = opA;      // opA = register rd
-                  end
-                  5'hd: begin // return:
-                      data_load_addr = opA - 8;  // opA = register 31
-                      next_PC        = data_load[31:0];
-                  end
-                  5'he: begin // brgt rd, rs, rt:
-                      if ($signed(opA) > $signed(opB))
-                          next_PC = rd; // branch target from rd
-                      else
-                          next_PC = PC + 4;
-                  end
-                  // Data Movement Instructions:
-                  5'h10: begin // mov rd, (rs)(L): load 64-bit word from memory.
-                      data_load_addr = opA + {20'b0, L}; // opA = register rs
-                      exec_result    = data_load;
-                      write_en       = 1'b1;
-                  end
-                  5'h11: begin // mov rd, rs: move register.
-                      exec_result = opA;
-                      write_en    = 1'b1;
-                  end
-                  5'h13: begin // mov (rd)(L), rs: store 64-bit word.
-                      mem_we         = 1'b1;
-                      mem_addr       = opA + {20'b0, L}; // opA = register rd (base)
-                      mem_write_data = opB;             // opB = register rs (value)
-                  end
-                  default: begin
-                      next_PC = PC + 4;
-                  end
-               endcase
-           end
-           3'd4: begin // WRITEBACK: typically just latches the computed value
-               // In WRITEBACK, the exec_result and write_en should have been set already.
-           end
-           default: begin
-               next_PC = PC + 4;
-           end
-         endcase
+        // defaults
+        next_PC        = PC + 4;
+        exec_result    = 64'b0;
+        write_en       = 1'b0;
+        write_reg      = rd;
+        mem_we         = 1'b0;
+        mem_addr       = 32'b0;
+        mem_write_data = 64'b0;
+        data_load_addr = 32'b0;
+
+        case (current_state)
+        //--------------------------------------------------
+        3'd2: begin // EXECUTE
+            // only compute ALU/FPU, but do NOT write back here
+            case (opcode)
+                // ALU ops
+                5'h18,5'h1a,5'h1c,5'h1d,
+                5'h0,5'h1,5'h2,5'h3,5'h4,5'h6,
+                5'h19,5'h1b,5'h5,5'h7,5'h12:
+                    exec_result = alu_out;
+                // FPU ops
+                5'h14,5'h15,5'h16,5'h17:
+                    exec_result = fpu_out;
+                default: ;
+            endcase
+        end
+
+        //--------------------------------------------------
+        3'd3: begin // MEMORY
+            case (opcode)
+                5'h8:  next_PC = opA;
+                5'h9:  next_PC = PC + opA[31:0];
+                5'ha:  next_PC = PC + {{20{L[11]}},L};
+                5'hb:  next_PC = (opA!=0) ? opB : PC+4;
+                5'hc:  begin mem_we=1; mem_addr=opB-8; mem_write_data=PC+4; next_PC=opA; end
+                5'hd:  begin data_load_addr=opA-8; next_PC=data_load[31:0]; end
+                5'he:  next_PC = ($signed(opA)>$signed(opB))? rd : PC+4;
+                5'h10: begin data_load_addr=opA+{{52{L[11]}},L}; exec_result=data_load; end
+                5'h11: begin exec_result=opA; end
+                5'h13: begin mem_we=1; mem_addr=opA+{{52{L[11]}},L}; mem_write_data=opB; end
+                default: ;
+            endcase
+        end
+
+        //--------------------------------------------------
+        3'd4: begin // WRITEBACK
+            // now actually write the value computed in EX or MEM
+            case (opcode)
+                // integer/immediate/logical shifts & mov/reg‐to‐reg
+                5'h18,5'h19,5'h1a,5'h1b,5'h1c,5'h1d,
+                5'h0,5'h1,5'h2,5'h3,5'h4,5'h5,5'h6,5'h7,5'h12: begin
+                    write_en    = 1'b1;
+                    write_reg   = rd;
+                    // exec_result was set back in EX
+                end
+                // floating point
+                5'h14,5'h15,5'h16,5'h17: begin
+                    write_en    = 1'b1;
+                    write_reg   = rd;
+                end
+                // load
+                5'h10: begin
+                    write_en    = 1'b1;
+                    write_reg   = rd;
+                    // exec_result was set in MEM
+                end
+                default: ;
+            endcase
+        end
+
+        default: ;
+        endcase
     end
 endmodule
 
