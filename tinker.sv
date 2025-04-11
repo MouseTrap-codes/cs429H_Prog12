@@ -136,6 +136,135 @@ endmodule
 //   — unchanged from your original submission —
 //=====================================================================
 // ... paste your memory, decoder, ALU, FPU here ...
+//=====================================================================
+// MEMORY MODULE
+//=====================================================================
+// Single Von Neumann memory storing both instructions (4 bytes) and data (8 bytes).
+module memory (
+    input  [63:0] addr,
+    input         mem_read_instr,  // 1 => fetch 32-bit instruction from addr
+    input         mem_read_data,   // 1 => fetch 64-bit data from addr
+    input         mem_write,       // 1 => write 64-bit data
+    input  [63:0] write_data,      // data to store
+    output [31:0] instr_out,       // 32-bit instruction
+    output [63:0] data_out         // 64-bit data
+);
+    parameter MEM_SIZE = 524288;
+
+    // The testbench expects this name:
+    reg [7:0] bytes [0:MEM_SIZE-1];  // Must be named "bytes"
+
+    // 4-byte instruction fetch
+    assign instr_out = (mem_read_instr)
+        ? { bytes[addr],
+            bytes[addr+1],
+            bytes[addr+2],
+            bytes[addr+3] }
+        : 32'b0;
+
+    // 8-byte data fetch
+    assign data_out = (mem_read_data)
+        ? { bytes[addr],
+            bytes[addr+1],
+            bytes[addr+2],
+            bytes[addr+3],
+            bytes[addr+4],
+            bytes[addr+5],
+            bytes[addr+6],
+            bytes[addr+7] }
+        : 64'b0;
+
+    // Write 8 bytes
+    // For purely synchronous memory, you'd typically do @(posedge clk)
+    always @(posedge mem_write) begin
+        { bytes[addr],
+          bytes[addr+1],
+          bytes[addr+2],
+          bytes[addr+3],
+          bytes[addr+4],
+          bytes[addr+5],
+          bytes[addr+6],
+          bytes[addr+7] } = write_data;
+    end
+endmodule
+//=====================================================================
+// INSTRUCTION DECODER MODULE
+//=====================================================================
+module instruction_decoder(
+    input  [31:0] instr,
+    output [4:0]  opcode,
+    output [4:0]  rd,
+    output [4:0]  rs,
+    output [4:0]  rt,
+    output [11:0] L
+);
+    assign opcode = instr[31:27];
+    assign rd     = instr[26:22];
+    assign rs     = instr[21:17];
+    assign rt     = instr[16:12];
+    assign L      = instr[11:0];
+endmodule
+
+//=====================================================================
+// ALU MODULE
+//=====================================================================
+module alu(
+    input  [4:0]  opcode,
+    input  [63:0] rsVal,
+    input  [63:0] rtVal,
+    input  [11:0] L,
+    output reg [63:0] aluResult
+);
+    always @(*) begin
+        aluResult = 64'b0;
+        case (opcode)
+            5'b11000: aluResult = $signed(rsVal) + $signed(rtVal); // add
+            5'b11001: aluResult = rsVal + L;     // addi
+            5'b11010: aluResult = rsVal - rtVal; // sub
+            5'b11011: aluResult = rsVal - L;     // subi
+            5'b11100: aluResult = rsVal * rtVal; // mul
+            5'b11101: aluResult = rsVal / rtVal; // div
+            5'b00000: aluResult = rsVal & rtVal; // and
+            5'b00001: aluResult = rsVal | rtVal; // or
+            5'b00010: aluResult = rsVal ^ rtVal; // xor
+            5'b00011: aluResult = ~rsVal;        // not
+            5'b00100: aluResult = rsVal >> rtVal;// shftr
+            5'b00101: aluResult = rsVal >> L;    // shftri
+            5'b00110: aluResult = rsVal << rtVal;// shftl
+            5'b00111: aluResult = rsVal << L;    // shftli
+            5'b10001: aluResult = rsVal;         // mov rd, rs
+            5'b10010: begin                      // mov rd, L
+                aluResult = 64'b0;
+                aluResult[11:0] = L;
+            end
+        endcase
+    end
+endmodule
+
+//=====================================================================
+// FPU MODULE
+//=====================================================================
+module fpu(
+    input  [4:0]  opcode,
+    input  [63:0] rsVal,
+    input  [63:0] rtVal,
+    output reg [63:0] fpuResult
+);
+    real a, b, r;
+    always @(*) begin
+        a = $bitstoreal(rsVal);
+        b = $bitstoreal(rtVal);
+        r = 0.0;
+        case (opcode)
+            5'b10100: r = a + b;        // addf
+            5'b10101: r = a - b;        // subf
+            5'b10110: r = a * b;        // mulf
+            5'b10111: if (b != 0.0) r = a / b; // divf
+        endcase
+        fpuResult = $realtobits(r);
+    end
+endmodule
+
 
 //=====================================================================
 // TOP-LEVEL MODULE (NAMED "tinker_core")
